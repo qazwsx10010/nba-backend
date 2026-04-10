@@ -8,19 +8,12 @@ from datetime import datetime, date, timedelta
 import pytz
 
 app = FastAPI()
-
-# ★ 修正 CORS — 允許所有來源
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["GET","POST","OPTIONS"], allow_headers=["*"])
 
 TW = pytz.timezone("Asia/Taipei")
-DB_URL = os.environ.get("DATABASE_URL", "")
-ODDS_KEY = os.environ.get("ODDS_API_KEY", "")
+DB_URL = os.environ.get("DATABASE_URL","")
+ODDS_KEY = os.environ.get("ODDS_API_KEY","")
+JBOT_TOKEN = os.environ.get("JBOT_TOKEN","DEV_ONLY_FOR_FREE_TOKEN")
 
 TEAM_DATA = {
     "Atlanta Hawks":{"elo":1697,"pts":116.3,"opp":112.1,"pace":101.5,"abbr":"ATL"},
@@ -55,6 +48,25 @@ TEAM_DATA = {
     "Washington Wizards":{"elo":1150,"pts":105.8,"opp":121.5,"pace":101.4,"abbr":"WAS"},
 }
 
+# 台灣運彩球隊名稱對照
+TW_TEAM_MAP = {
+    "亞特蘭大老鷹":"Atlanta Hawks","波士頓塞爾提克":"Boston Celtics",
+    "布魯克林籃網":"Brooklyn Nets","夏洛特黃蜂":"Charlotte Hornets",
+    "芝加哥公牛":"Chicago Bulls","克里夫蘭騎士":"Cleveland Cavaliers",
+    "達拉斯獨行俠":"Dallas Mavericks","丹佛金塊":"Denver Nuggets",
+    "底特律活塞":"Detroit Pistons","金州勇士":"Golden State Warriors",
+    "休士頓火箭":"Houston Rockets","印第安納溜馬":"Indiana Pacers",
+    "洛杉磯快艇":"Los Angeles Clippers","洛杉磯湖人":"Los Angeles Lakers",
+    "曼菲斯灰熊":"Memphis Grizzlies","邁阿密熱火":"Miami Heat",
+    "密爾瓦基公鹿":"Milwaukee Bucks","明尼蘇達灰狼":"Minnesota Timberwolves",
+    "紐奧良鵜鶘":"New Orleans Pelicans","紐約尼克":"New York Knicks",
+    "奧克拉荷馬雷霆":"Oklahoma City Thunder","奧蘭多魔術":"Orlando Magic",
+    "費城76人":"Philadelphia 76ers","鳳凰城太陽":"Phoenix Suns",
+    "波特蘭拓荒者":"Portland Trail Blazers","沙加緬度國王":"Sacramento Kings",
+    "聖安東尼奧馬刺":"San Antonio Spurs","多倫多暴龍":"Toronto Raptors",
+    "猶他爵士":"Utah Jazz","華盛頓巫師":"Washington Wizards",
+}
+
 INJURIES = {
     "MIA":[{"player":"吉米·巴特勒","status":"缺陣"}],
     "DAL":[{"player":"盧卡·唐西奇","status":"缺陣"}],
@@ -74,13 +86,12 @@ def calc_model(home_en, away_en, bp):
     ha=h.get("abbr",""); aa=a.get("abbr","")
     elo_p=1/(1+10**(-(h["elo"]-a["elo"]+70)/400))
     off_p=0.5+((h["pts"]-a["opp"])-(a["pts"]-h["opp"]))*0.012
-    inj=( inj_penalty(aa)-inj_penalty(ha))*0.02
+    inj=(inj_penalty(aa)-inj_penalty(ha))*0.02
     return max(0.05,min(0.95,elo_p*0.35+off_p*0.25+bp*0.3+0.5*0.1+inj))
 
 async def get_db():
-    url = DB_URL
-    if url.startswith("postgres://"):
-        url = url.replace("postgres://","postgresql://",1)
+    url=DB_URL
+    if url.startswith("postgres://"): url=url.replace("postgres://","postgresql://",1)
     return await asyncpg.connect(url)
 
 async def init_db():
@@ -99,6 +110,14 @@ async def init_db():
             ev_pct FLOAT,
             spread_line FLOAT,
             model_spread FLOAT,
+            tw_spread FLOAT,
+            tw_home_odds FLOAT,
+            tw_away_odds FLOAT,
+            tw_normal_home FLOAT,
+            tw_normal_away FLOAT,
+            tw_total FLOAT,
+            tw_over_odds FLOAT,
+            tw_under_odds FLOAT,
             actual_winner TEXT,
             actual_home_score INTEGER,
             actual_away_score INTEGER,
@@ -106,12 +125,75 @@ async def init_db():
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)
+    # 補欄位（若舊版已存在）
+    for col in ["tw_spread FLOAT","tw_home_odds FLOAT","tw_away_odds FLOAT","tw_normal_home FLOAT","tw_normal_away FLOAT","tw_total FLOAT","tw_over_odds FLOAT","tw_under_odds FLOAT"]:
+        try:
+            await conn.execute(f"ALTER TABLE predictions ADD COLUMN IF NOT EXISTS {col}")
+        except: pass
     await conn.close()
-    print("✅ 資料庫初始化完成")
+    print("✅ DB 初始化完成")
+
+# ── 抓台灣運彩 NBA 讓分
+async def fetch_tw_odds(target_date: str = None):
+    if not target_date:
+        target_date = date.today().strftime("%Y-%m-%d")
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            res = await client.get(
+                "https://api.sportsbot.tech/v2/odds",
+                params={"sport":"NBA","date":target_date,"mode":"close"},
+                headers={"X-JBot-Token": JBOT_TOKEN}
+            )
+            data = res.json()
+        if data.get("status") != "OK":
+            return {"status":"error","message":str(data)}
+        games = []
+        for item in data.get("data",[]):
+            away_tw = item.get("away","")
+            home_tw = item.get("home","")
+            away_en = TW_TEAM_MAP.get(away_tw, away_tw)
+            home_en = TW_TEAM_MAP.get(home_tw, home_tw)
+            odds_list = item.get("odds",[])
+            if not odds_list: continue
+            latest = odds_list[-1]
+            # 不讓分
+            normal = latest.get("normal",{})
+            normal_h = normal.get("h")
+            normal_a = normal.get("a")
+            # 讓分（取主要玩法 m:true）
+            handi = latest.get("handi",{})
+            main_spread = main_h = main_a = None
+            for spread_val, spread_data in handi.items():
+                if spread_data.get("m"):
+                    main_spread = float(spread_val)
+                    main_h = spread_data.get("h")
+                    main_a = spread_data.get("a")
+                    break
+            # 大小分
+            total_data = latest.get("total",{})
+            main_total = main_over = main_under = None
+            for total_val, total_info in total_data.items():
+                if total_info.get("m"):
+                    main_total = float(total_val)
+                    main_over = total_info.get("o")
+                    main_under = total_info.get("u")
+                    break
+            games.append({
+                "home_tw": home_tw, "away_tw": away_tw,
+                "home_en": home_en, "away_en": away_en,
+                "time": item.get("time",""),
+                "normal_home": normal_h, "normal_away": normal_a,
+                "spread": main_spread,
+                "spread_home_odds": main_h, "spread_away_odds": main_a,
+                "total": main_total, "over_odds": main_over, "under_odds": main_under,
+            })
+        return {"status":"ok","date":target_date,"games":games,"quota":data.get("user",{})}
+    except Exception as e:
+        return {"status":"error","message":str(e)}
 
 async def fetch_and_predict():
     if not ODDS_KEY or not DB_URL:
-        print("缺少設定"); return
+        return {"status":"error","message":"缺少設定"}
     print(f"[{datetime.now(TW).strftime('%Y-%m-%d %H:%M')}] 抓取今日賽程...")
     try:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -158,14 +240,13 @@ async def fetch_and_predict():
                 """,today,hEn,aEn,bet,conf,btype,odds,ev,spLine,ms)
                 saved+=1
         await conn.close()
-        print(f"✅ 儲存 {saved} 場預測")
+        print(f"✅ 儲存 {saved} 場")
         return {"status":"ok","saved":saved}
     except Exception as e:
-        print(f"❌ {e}"); return {"status":"error","message":str(e)}
+        return {"status":"error","message":str(e)}
 
 async def update_results():
     if not DB_URL: return
-    print(f"[{datetime.now(TW).strftime('%Y-%m-%d %H:%M')}] 更新比賽結果...")
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             res=await client.get("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard")
@@ -191,14 +272,20 @@ async def update_results():
                     winner,hScore,aScore,row["predicted_winner"]==winner,row["id"])
                 updated+=1
         await conn.close()
-        print(f"✅ 更新 {updated} 場")
         return {"status":"ok","updated":updated}
     except Exception as e:
-        print(f"❌ {e}"); return {"status":"error","message":str(e)}
+        return {"status":"error","message":str(e)}
 
+# ── API 路由
 @app.get("/")
 async def root():
     return {"status":"ok","message":"NBA 預測系統後端運作中"}
+
+@app.get("/api/tw-odds")
+async def get_tw_odds(date_str: str = None):
+    """抓取台灣運彩讓分（手動呼叫，避免被封鎖）"""
+    result = await fetch_tw_odds(date_str)
+    return result
 
 @app.get("/api/predictions/today")
 async def get_today():
@@ -222,11 +309,12 @@ async def get_history(days:int=60):
 
 @app.get("/api/stats")
 async def get_stats():
-    if not DB_URL: return {"today":{"rate":0,"wins":0,"total":0},"week":{"rate":0,"wins":0,"total":0},"month":{"rate":0,"wins":0,"total":0},"high_conf":{"rate":0,"wins":0,"total":0}}
+    if not DB_URL:
+        return {"today":{"rate":0,"wins":0,"total":0},"week":{"rate":0,"wins":0,"total":0},"month":{"rate":0,"wins":0,"total":0},"high_conf":{"rate":0,"wins":0,"total":0}}
     conn=await get_db()
     def wr(r):
         if not r or not r["total"]: return {"rate":0,"wins":0,"total":0}
-        return {"rate":round((r["wins"] or 0)/r["total"]*100),"wins":r["wins"] or 0,"total":r["total"]}
+        return {"rate":round((r["wins"] or 0)/r["total"]*100),"wins":int(r["wins"] or 0),"total":r["total"]}
     td=await conn.fetchrow("SELECT COUNT(*) as total,SUM(CASE WHEN result THEN 1 ELSE 0 END) as wins FROM predictions WHERE game_date=CURRENT_DATE AND result IS NOT NULL")
     wk=await conn.fetchrow("SELECT COUNT(*) as total,SUM(CASE WHEN result THEN 1 ELSE 0 END) as wins FROM predictions WHERE game_date>=CURRENT_DATE-interval '7 days' AND result IS NOT NULL")
     mn=await conn.fetchrow("SELECT COUNT(*) as total,SUM(CASE WHEN result THEN 1 ELSE 0 END) as wins FROM predictions WHERE game_date>=CURRENT_DATE-interval '30 days' AND result IS NOT NULL")
@@ -236,13 +324,11 @@ async def get_stats():
 
 @app.post("/api/trigger/predict")
 async def trigger_predict():
-    result=await fetch_and_predict()
-    return result or {"status":"ok"}
+    return await fetch_and_predict() or {"status":"ok"}
 
 @app.post("/api/trigger/results")
 async def trigger_results():
-    result=await update_results()
-    return result or {"status":"ok"}
+    return await update_results() or {"status":"ok"}
 
 scheduler=AsyncIOScheduler(timezone=TW)
 
