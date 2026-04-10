@@ -4,18 +4,24 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncpg
 import httpx
 import os
-import json
 from datetime import datetime, date, timedelta
 import pytz
 
 app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# ★ 修正 CORS — 允許所有來源
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 TW = pytz.timezone("Asia/Taipei")
 DB_URL = os.environ.get("DATABASE_URL", "")
 ODDS_KEY = os.environ.get("ODDS_API_KEY", "")
 
-# ── ELO 資料
 TEAM_DATA = {
     "Atlanta Hawks":{"elo":1697,"pts":116.3,"opp":112.1,"pace":101.5,"abbr":"ATL"},
     "Boston Celtics":{"elo":1759,"pts":117.8,"opp":108.9,"pace":97.5,"abbr":"BOS"},
@@ -50,42 +56,36 @@ TEAM_DATA = {
 }
 
 INJURIES = {
-    "MIA": [{"player":"吉米·巴特勒","status":"缺陣","part":"膝"}],
-    "DAL": [{"player":"盧卡·唐西奇","status":"缺陣","part":"膝"}],
-    "BOS": [{"player":"波爾辛吉斯","status":"存疑","part":"腿"}],
-    "LAL": [{"player":"勒布朗·詹姆斯","status":"存疑","part":"腳"}],
-    "MEM": [{"player":"賈·莫蘭特","status":"存疑","part":"手"}],
-    "PHI": [{"player":"喬爾·恩比德","status":"缺陣","part":"膝"}],
-    "OKC": [{"player":"切特·霍姆格倫","status":"存疑","part":"背"}],
+    "MIA":[{"player":"吉米·巴特勒","status":"缺陣"}],
+    "DAL":[{"player":"盧卡·唐西奇","status":"缺陣"}],
+    "BOS":[{"player":"波爾辛吉斯","status":"存疑"}],
+    "LAL":[{"player":"勒布朗·詹姆斯","status":"存疑"}],
+    "MEM":[{"player":"賈·莫蘭特","status":"存疑"}],
+    "PHI":[{"player":"喬爾·恩比德","status":"缺陣"}],
+    "OKC":[{"player":"切特·霍姆格倫","status":"存疑"}],
 }
 
 def inj_penalty(abbr):
-    inj = INJURIES.get(abbr, [])
-    return sum(4 if i["status"] == "缺陣" else 1.5 for i in inj)
+    return sum(4 if i["status"]=="缺陣" else 1.5 for i in INJURIES.get(abbr,[]))
 
-def calc_model(home_en, away_en, bookie_prob):
-    h = TEAM_DATA.get(home_en, {"elo":1400,"pts":110,"opp":110})
-    a = TEAM_DATA.get(away_en, {"elo":1400,"pts":110,"opp":110})
-    ha = h.get("abbr","")
-    aa = a.get("abbr","")
-    elo_diff = h["elo"] - a["elo"] + 70
-    elo_prob = 1 / (1 + 10 ** (-elo_diff / 400))
-    off_edge = (h["pts"] - a["opp"]) - (a["pts"] - h["opp"])
-    off_prob = 0.5 + off_edge * 0.012
-    inj_adj = (inj_penalty(aa) - inj_penalty(ha)) * 0.02
-    model_prob = elo_prob*0.35 + off_prob*0.25 + bookie_prob*0.3 + 0.5*0.1 + inj_adj
-    return max(0.05, min(0.95, model_prob))
-
-def calc_ev(prob, odds):
-    return (prob * odds - 1) * 100
+def calc_model(home_en, away_en, bp):
+    h=TEAM_DATA.get(home_en,{"elo":1400,"pts":110,"opp":110})
+    a=TEAM_DATA.get(away_en,{"elo":1400,"pts":110,"opp":110})
+    ha=h.get("abbr",""); aa=a.get("abbr","")
+    elo_p=1/(1+10**(-(h["elo"]-a["elo"]+70)/400))
+    off_p=0.5+((h["pts"]-a["opp"])-(a["pts"]-h["opp"]))*0.012
+    inj=( inj_penalty(aa)-inj_penalty(ha))*0.02
+    return max(0.05,min(0.95,elo_p*0.35+off_p*0.25+bp*0.3+0.5*0.1+inj))
 
 async def get_db():
-    return await asyncpg.connect(DB_URL)
+    url = DB_URL
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://","postgresql://",1)
+    return await asyncpg.connect(url)
 
 async def init_db():
-    if not DB_URL:
-        return
-    conn = await get_db()
+    if not DB_URL: return
+    conn=await get_db()
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS predictions (
             id SERIAL PRIMARY KEY,
@@ -94,7 +94,7 @@ async def init_db():
             away_team TEXT NOT NULL,
             predicted_winner TEXT NOT NULL,
             confidence INTEGER NOT NULL,
-            bet_type TEXT NOT NULL,
+            bet_type TEXT,
             bet_odds FLOAT,
             ev_pct FLOAT,
             spread_line FLOAT,
@@ -107,221 +107,149 @@ async def init_db():
         )
     """)
     await conn.close()
+    print("✅ 資料庫初始化完成")
 
 async def fetch_and_predict():
-    """每天早上8點自動抓賽程並儲存預測"""
     if not ODDS_KEY or not DB_URL:
-        print("缺少 ODDS_KEY 或 DB_URL")
-        return
-    print(f"[{datetime.now(TW).strftime('%Y-%m-%d %H:%M')}] 開始抓取今日賽程...")
+        print("缺少設定"); return
+    print(f"[{datetime.now(TW).strftime('%Y-%m-%d %H:%M')}] 抓取今日賽程...")
     try:
-        async with httpx.AsyncClient() as client:
-            res = await client.get(
-                f"https://api.the-odds-api.com/v4/sports/basketball_nba/odds/",
-                params={"apiKey": ODDS_KEY, "regions": "us", "markets": "h2h,spreads", "oddsFormat": "decimal", "dateFormat": "iso"},
-                timeout=30
-            )
-            data = res.json()
-        conn = await get_db()
-        today = date.today()
-        saved = 0
+        async with httpx.AsyncClient(timeout=30) as client:
+            res=await client.get("https://api.the-odds-api.com/v4/sports/basketball_nba/odds/",
+                params={"apiKey":ODDS_KEY,"regions":"us","markets":"h2h,spreads","oddsFormat":"decimal","dateFormat":"iso"})
+            data=res.json()
+        conn=await get_db()
+        today=date.today()
+        saved=0
         for game in data:
-            home_en = game["home_team"]
-            away_en = game["away_team"]
-            h2h_home = h2h_away = sp_line = sp_home_odds = sp_away_odds = None
-            for bk in game.get("bookmakers", []):
-                for mk in bk.get("markets", []):
-                    if mk["key"] == "h2h":
-                        ho = next((o for o in mk["outcomes"] if o["name"] == home_en), None)
-                        ao = next((o for o in mk["outcomes"] if o["name"] == away_en), None)
-                        if ho and ao:
-                            h2h_home = ho["price"]
-                            h2h_away = ao["price"]
-                    if mk["key"] == "spreads":
-                        ho = next((o for o in mk["outcomes"] if o["name"] == home_en), None)
-                        ao = next((o for o in mk["outcomes"] if o["name"] == away_en), None)
-                        if ho and ao:
-                            sp_line = ho["point"]
-                            sp_home_odds = ho["price"]
-                            sp_away_odds = ao["price"]
+            hEn=game["home_team"]; aEn=game["away_team"]
+            h2hH=h2hA=spLine=spHO=spAO=None
+            for bk in game.get("bookmakers",[]):
+                for mk in bk.get("markets",[]):
+                    if mk["key"]=="h2h":
+                        ho=next((o for o in mk["outcomes"] if o["name"]==hEn),None)
+                        ao=next((o for o in mk["outcomes"] if o["name"]==aEn),None)
+                        if ho and ao: h2hH=ho["price"]; h2hA=ao["price"]
+                    if mk["key"]=="spreads":
+                        ho=next((o for o in mk["outcomes"] if o["name"]==hEn),None)
+                        ao=next((o for o in mk["outcomes"] if o["name"]==aEn),None)
+                        if ho and ao: spLine=ho["point"]; spHO=ho["price"]; spAO=ao["price"]
                 break
-            if not h2h_home:
-                continue
-            raw_h = 1/h2h_home
-            raw_a = 1/h2h_away
-            bp = raw_h / (raw_h + raw_a)
-            mp = calc_model(home_en, away_en, bp)
-            ms = (mp - 0.5) * 28
-            conf = max(round(mp*100), round((1-mp)*100))
-            # 決定下注方向
-            if sp_line is not None:
-                diff = ms - sp_line
-                if abs(diff) < 0.5:
-                    bet_team = home_en if mp >= 0.5 else away_en
-                    bet_odds = h2h_home if mp >= 0.5 else h2h_away
-                    bet_type = "不讓分"
-                elif diff > 0:
-                    bet_team = home_en
-                    bet_odds = sp_home_odds or 1.72
-                    bet_type = f"讓分 {sp_line}"
-                else:
-                    bet_team = away_en
-                    bet_odds = sp_away_odds or 1.72
-                    bet_type = f"吃分 +{abs(sp_line)}"
+            if not h2hH: continue
+            bp=(1/h2hH)/((1/h2hH)+(1/h2hA))
+            mp=calc_model(hEn,aEn,bp)
+            ms=(mp-0.5)*28
+            conf=max(round(mp*100),round((1-mp)*100))
+            if spLine is not None:
+                diff=ms-spLine
+                if abs(diff)<0.5: bet=hEn if mp>=0.5 else aEn; odds=h2hH if mp>=0.5 else h2hA; btype="不讓分"
+                elif diff>0: bet=hEn; odds=spHO or 1.72; btype=f"讓分 {spLine}"
+                else: bet=aEn; odds=spAO or 1.72; btype=f"吃分 +{abs(spLine)}"
             else:
-                bet_team = home_en if mp >= 0.5 else away_en
-                bet_odds = h2h_home if mp >= 0.5 else h2h_away
-                bet_type = "不讓分"
-            ev = calc_ev(conf/100, bet_odds)
-            # 避免重複插入
-            exists = await conn.fetchval(
+                bet=hEn if mp>=0.5 else aEn; odds=h2hH if mp>=0.5 else h2hA; btype="不讓分"
+            ev=(conf/100*odds-1)*100
+            exists=await conn.fetchval(
                 "SELECT id FROM predictions WHERE game_date=$1 AND home_team=$2 AND away_team=$3",
-                today, home_en, away_en
-            )
+                today,hEn,aEn)
             if not exists:
                 await conn.execute("""
-                    INSERT INTO predictions (game_date, home_team, away_team, predicted_winner, confidence, bet_type, bet_odds, ev_pct, spread_line, model_spread)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-                """, today, home_en, away_en, bet_team, conf, bet_type, bet_odds, ev, sp_line, ms)
-                saved += 1
+                    INSERT INTO predictions(game_date,home_team,away_team,predicted_winner,confidence,bet_type,bet_odds,ev_pct,spread_line,model_spread)
+                    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                """,today,hEn,aEn,bet,conf,btype,odds,ev,spLine,ms)
+                saved+=1
         await conn.close()
         print(f"✅ 儲存 {saved} 場預測")
+        return {"status":"ok","saved":saved}
     except Exception as e:
-        print(f"❌ 錯誤: {e}")
+        print(f"❌ {e}"); return {"status":"error","message":str(e)}
 
 async def update_results():
-    """每天凌晨2點抓昨天比賽結果並更新"""
-    if not DB_URL:
-        return
-    print(f"[{datetime.now(TW).strftime('%Y-%m-%d %H:%M')}] 更新昨日比賽結果...")
+    if not DB_URL: return
+    print(f"[{datetime.now(TW).strftime('%Y-%m-%d %H:%M')}] 更新比賽結果...")
     try:
-        async with httpx.AsyncClient() as client:
-            res = await client.get(
-                "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
-                timeout=15
-            )
-            data = res.json()
-        conn = await get_db()
-        yesterday = date.today() - timedelta(days=1)
-        updated = 0
-        for event in data.get("events", []):
-            comp = event["competitions"][0]
-            status = event["status"]["type"]["state"]
-            if status != "post":
-                continue
-            home = next((c for c in comp["competitors"] if c["homeAway"] == "home"), None)
-            away = next((c for c in comp["competitors"] if c["homeAway"] == "away"), None)
-            if not home or not away:
-                continue
-            home_name = home["team"]["displayName"]
-            away_name = away["team"]["displayName"]
-            home_score = int(home.get("score", 0))
-            away_score = int(away.get("score", 0))
-            actual_winner = home_name if home_score > away_score else away_name
-            row = await conn.fetchrow(
-                "SELECT id, predicted_winner FROM predictions WHERE game_date=$1 AND home_team=$2 AND away_team=$3",
-                yesterday, home_name, away_name
-            )
+        async with httpx.AsyncClient(timeout=15) as client:
+            res=await client.get("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard")
+            data=res.json()
+        conn=await get_db()
+        yesterday=date.today()-timedelta(days=1)
+        updated=0
+        for ev in data.get("events",[]):
+            comp=ev["competitions"][0]
+            if ev["status"]["type"]["state"]!="post": continue
+            home=next((c for c in comp["competitors"] if c["homeAway"]=="home"),None)
+            away=next((c for c in comp["competitors"] if c["homeAway"]=="away"),None)
+            if not home or not away: continue
+            hName=home["team"]["displayName"]; aName=away["team"]["displayName"]
+            hScore=int(home.get("score",0)); aScore=int(away.get("score",0))
+            winner=hName if hScore>aScore else aName
+            row=await conn.fetchrow(
+                "SELECT id,predicted_winner FROM predictions WHERE game_date=$1 AND home_team=$2 AND away_team=$3",
+                yesterday,hName,aName)
             if row:
-                result = row["predicted_winner"] == actual_winner
-                await conn.execute("""
-                    UPDATE predictions SET actual_winner=$1, actual_home_score=$2, actual_away_score=$3, result=$4
-                    WHERE id=$5
-                """, actual_winner, home_score, away_score, result, row["id"])
-                updated += 1
+                await conn.execute(
+                    "UPDATE predictions SET actual_winner=$1,actual_home_score=$2,actual_away_score=$3,result=$4 WHERE id=$5",
+                    winner,hScore,aScore,row["predicted_winner"]==winner,row["id"])
+                updated+=1
         await conn.close()
-        print(f"✅ 更新 {updated} 場結果")
+        print(f"✅ 更新 {updated} 場")
+        return {"status":"ok","updated":updated}
     except Exception as e:
-        print(f"❌ 錯誤: {e}")
+        print(f"❌ {e}"); return {"status":"error","message":str(e)}
 
-# ── API 路由
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "NBA 預測系統後端運作中"}
+    return {"status":"ok","message":"NBA 預測系統後端運作中"}
 
 @app.get("/api/predictions/today")
 async def get_today():
-    """今日預測"""
-    if not DB_URL:
-        return {"error": "DB not configured"}
-    conn = await get_db()
-    rows = await conn.fetch(
-        "SELECT * FROM predictions WHERE game_date=$1 ORDER BY confidence DESC",
-        date.today()
-    )
+    if not DB_URL: return []
+    conn=await get_db()
+    rows=await conn.fetch("SELECT * FROM predictions WHERE game_date=$1 ORDER BY confidence DESC",date.today())
     await conn.close()
     return [dict(r) for r in rows]
 
 @app.get("/api/predictions/history")
-async def get_history(days: int = 30):
-    """歷史回測（只含有結果的）"""
-    if not DB_URL:
-        return {"error": "DB not configured"}
-    conn = await get_db()
-    rows = await conn.fetch("""
-        SELECT * FROM predictions
-        WHERE result IS NOT NULL
-        AND game_date >= CURRENT_DATE - $1::interval
-        ORDER BY game_date DESC, confidence DESC
-    """, f"{days} days")
+async def get_history(days:int=60):
+    if not DB_URL: return []
+    conn=await get_db()
+    rows=await conn.fetch("""
+        SELECT * FROM predictions WHERE result IS NOT NULL
+        AND game_date>=CURRENT_DATE-($1::text||' days')::interval
+        ORDER BY game_date DESC,confidence DESC
+    """,str(days))
     await conn.close()
     return [dict(r) for r in rows]
 
 @app.get("/api/stats")
 async def get_stats():
-    """勝率統計"""
-    if not DB_URL:
-        return {"error": "DB not configured"}
-    conn = await get_db()
-    today_stats = await conn.fetchrow("""
-        SELECT COUNT(*) as total, SUM(CASE WHEN result THEN 1 ELSE 0 END) as wins
-        FROM predictions WHERE game_date=CURRENT_DATE AND result IS NOT NULL
-    """)
-    week_stats = await conn.fetchrow("""
-        SELECT COUNT(*) as total, SUM(CASE WHEN result THEN 1 ELSE 0 END) as wins
-        FROM predictions WHERE game_date >= CURRENT_DATE - interval '7 days' AND result IS NOT NULL
-    """)
-    month_stats = await conn.fetchrow("""
-        SELECT COUNT(*) as total, SUM(CASE WHEN result THEN 1 ELSE 0 END) as wins
-        FROM predictions WHERE game_date >= CURRENT_DATE - interval '30 days' AND result IS NOT NULL
-    """)
-    high_conf = await conn.fetchrow("""
-        SELECT COUNT(*) as total, SUM(CASE WHEN result THEN 1 ELSE 0 END) as wins
-        FROM predictions WHERE confidence >= 70 AND result IS NOT NULL
-    """)
+    if not DB_URL: return {"today":{"rate":0,"wins":0,"total":0},"week":{"rate":0,"wins":0,"total":0},"month":{"rate":0,"wins":0,"total":0},"high_conf":{"rate":0,"wins":0,"total":0}}
+    conn=await get_db()
+    def wr(r):
+        if not r or not r["total"]: return {"rate":0,"wins":0,"total":0}
+        return {"rate":round((r["wins"] or 0)/r["total"]*100),"wins":r["wins"] or 0,"total":r["total"]}
+    td=await conn.fetchrow("SELECT COUNT(*) as total,SUM(CASE WHEN result THEN 1 ELSE 0 END) as wins FROM predictions WHERE game_date=CURRENT_DATE AND result IS NOT NULL")
+    wk=await conn.fetchrow("SELECT COUNT(*) as total,SUM(CASE WHEN result THEN 1 ELSE 0 END) as wins FROM predictions WHERE game_date>=CURRENT_DATE-interval '7 days' AND result IS NOT NULL")
+    mn=await conn.fetchrow("SELECT COUNT(*) as total,SUM(CASE WHEN result THEN 1 ELSE 0 END) as wins FROM predictions WHERE game_date>=CURRENT_DATE-interval '30 days' AND result IS NOT NULL")
+    hc=await conn.fetchrow("SELECT COUNT(*) as total,SUM(CASE WHEN result THEN 1 ELSE 0 END) as wins FROM predictions WHERE confidence>=70 AND result IS NOT NULL")
     await conn.close()
-    def wr(row):
-        if not row or not row["total"]:
-            return {"rate": 0, "wins": 0, "total": 0}
-        return {"rate": round(row["wins"]/row["total"]*100), "wins": row["wins"], "total": row["total"]}
-    return {
-        "today": wr(today_stats),
-        "week": wr(week_stats),
-        "month": wr(month_stats),
-        "high_conf": wr(high_conf)
-    }
+    return {"today":wr(td),"week":wr(wk),"month":wr(mn),"high_conf":wr(hc)}
 
 @app.post("/api/trigger/predict")
 async def trigger_predict():
-    """手動觸發預測（測試用）"""
-    await fetch_and_predict()
-    return {"status": "ok"}
+    result=await fetch_and_predict()
+    return result or {"status":"ok"}
 
 @app.post("/api/trigger/results")
 async def trigger_results():
-    """手動觸發更新結果（測試用）"""
-    await update_results()
-    return {"status": "ok"}
+    result=await update_results()
+    return result or {"status":"ok"}
 
-# ── 啟動定時任務
-scheduler = AsyncIOScheduler(timezone=TW)
+scheduler=AsyncIOScheduler(timezone=TW)
 
 @app.on_event("startup")
 async def startup():
     await init_db()
-    # 每天早上8點抓預測
-    scheduler.add_job(fetch_and_predict, "cron", hour=8, minute=0)
-    # 每天凌晨2點更新結果
-    scheduler.add_job(update_results, "cron", hour=2, minute=0)
+    scheduler.add_job(fetch_and_predict,"cron",hour=8,minute=0)
+    scheduler.add_job(update_results,"cron",hour=2,minute=0)
     scheduler.start()
-    print("✅ NBA 預測後端啟動完成")
+    print("✅ 後端啟動完成")
