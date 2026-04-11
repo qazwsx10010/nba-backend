@@ -306,20 +306,17 @@ async def fetch_polymarket_odds():
 
             home_team, away_team = found_teams[0], found_teams[1]
 
-            # 找 moneyline market
+            # 找 moneyline market（格式："TeamA vs. TeamB"）
             for m in event.get("markets", []):
                 question = m.get("question", "")
-                if not question.startswith("Will ") or " win" not in question:
-                    continue
-                if any(x in question.lower() for x in ["draw","spread","cover","total","points","quarter","half"]):
-                    continue
-
-                winner_team = next((t for t in nba_teams if t in question), None)
-                if not winner_team:
-                    continue
-
                 outcomes_raw = m.get("outcomes", "[]")
                 prices_raw = m.get("outcomePrices", "[]")
+
+                # 只要 "X vs. Y" 格式（不要 Spread、Total 等）
+                if "vs." not in question or question.startswith("Spread") or question.startswith("Total"):
+                    continue
+                if any(x in question.lower() for x in ["spread","total","points","quarter","half","draw"]):
+                    continue
 
                 if isinstance(outcomes_raw, str):
                     try: outcomes = _json.loads(outcomes_raw)
@@ -331,18 +328,23 @@ async def fetch_polymarket_odds():
                     except: continue
                 else: prices = prices_raw
 
-                if len(outcomes) == 2 and outcomes[0] == "Yes":
-                    try:
-                        win_prob = float(prices[0])
-                        lose_prob = float(prices[1])
-                    except: continue
-                    if not (0 < win_prob < 1): continue
+                if len(outcomes) != 2 or len(prices) != 2:
+                    continue
 
-                    loser_team = away_team if winner_team == home_team else home_team
-                    vol = event_volume
-                    result[winner_team] = {"prob": round(win_prob*100,1), "volume": round(vol), "reliable": vol>=5000}
-                    result[loser_team] = {"prob": round(lose_prob*100,1), "volume": round(vol), "reliable": vol>=5000}
-                    break
+                t1, t2 = str(outcomes[0]).strip(), str(outcomes[1]).strip()
+                # 確認兩個都是 NBA 球隊
+                if t1 not in nba_teams or t2 not in nba_teams:
+                    continue
+
+                try:
+                    p1, p2 = float(prices[0]), float(prices[1])
+                except: continue
+                if not (0 < p1 < 1 and 0 < p2 < 1): continue
+
+                vol = event_volume
+                result[t1] = {"prob": round(p1*100,1), "volume": round(vol), "reliable": vol>=5000}
+                result[t2] = {"prob": round(p2*100,1), "volume": round(vol), "reliable": vol>=5000}
+                break
 
         return {
             "status": "ok",
