@@ -474,17 +474,27 @@ async def get_polymarket(): return await fetch_polymarket_odds()
 
 @app.get("/api/polymarket/debug")
 async def debug_polymarket():
-    """除錯用：直接回傳 Polymarket 原始資料"""
+    """除錯用：找正確的 NBA tag ID"""
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            # 試不同參數
-            r1 = await client.get("https://gamma-api.polymarket.com/events?active=true&closed=false&limit=5")
-            r2 = await client.get("https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=5&tag_slug=nba")
-            r3 = await client.get("https://gamma-api.polymarket.com/events?active=true&limit=5&tag_id=21")
+            # 找所有 tags
+            r1 = await client.get("https://gamma-api.polymarket.com/tags?limit=200")
+            # 試用 sports slug
+            r2 = await client.get("https://gamma-api.polymarket.com/events?active=true&closed=false&limit=5&tag_slug=sports")
+            # 試用 basketball slug
+            r3 = await client.get("https://gamma-api.polymarket.com/events?active=true&closed=false&limit=5&tag_slug=basketball")
+            # 試直接搜尋 NBA
+            r4 = await client.get("https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=10&q=NBA")
+        
+        # 從 tags 裡找 NBA 相關
+        tags = r1.json() if r1.status_code==200 else []
+        nba_tags = [t for t in (tags if isinstance(tags, list) else []) if 'nba' in t.get('slug','').lower() or 'basketball' in t.get('label','').lower() or 'nba' in t.get('label','').lower()]
+        
         return {
-            "events_raw": r1.json() if r1.status_code==200 else f"ERROR {r1.status_code}",
-            "markets_nba": r2.json() if r2.status_code==200 else f"ERROR {r2.status_code}",
-            "events_tag21": r3.json() if r3.status_code==200 else f"ERROR {r3.status_code}",
+            "nba_related_tags": nba_tags[:10],
+            "sports_events_count": len(r2.json()) if r2.status_code==200 else f"ERROR {r2.status_code}",
+            "basketball_events": r3.json()[:2] if r3.status_code==200 and isinstance(r3.json(),list) else f"ERROR {r3.status_code}",
+            "nba_search_markets": r4.json()[:3] if r4.status_code==200 else f"ERROR {r4.status_code}",
         }
     except Exception as e:
         return {"error": str(e)}
