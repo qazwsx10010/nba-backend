@@ -260,9 +260,7 @@ async def fetch_nba_stats():
 async def fetch_polymarket_odds():
     """從後端抓 Polymarket NBA 今日單場勝負賭盤"""
     try:
-        today = date.today().strftime("%Y-%m-%d")
-        tomorrow = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
-
+        import json as _json
         async with httpx.AsyncClient(timeout=15) as client:
             res = await client.get(
                 "https://gamma-api.polymarket.com/events",
@@ -273,17 +271,14 @@ async def fetch_polymarket_odds():
                     "limit": "100",
                     "order": "volume24hr",
                     "ascending": "false",
-                    "start_date_min": today,   # 只抓今天開始的賭盤
-                    "start_date_max": tomorrow,
                 }
             )
             data = res.json()
 
-        import json as _json
         events = data if isinstance(data, list) else data.get("events", [])
         result = {}
 
-        # NBA 球隊名稱列表（用來判斷是不是單場勝負）
+        # NBA 球隊短名稱（用來確認是單場勝負賭盤）
         nba_teams = {
             "Hawks","Celtics","Nets","Hornets","Bulls","Cavaliers","Mavericks","Nuggets",
             "Pistons","Warriors","Rockets","Pacers","Clippers","Lakers","Grizzlies","Heat",
@@ -296,7 +291,9 @@ async def fetch_polymarket_odds():
             for m in markets:
                 outcomes_raw = m.get("outcomes", "[]")
                 prices_raw = m.get("outcomePrices", "[]")
-                volume = float(m.get("volume24hr", 0) or m.get("volume", 0) or 0)
+                volume24 = float(m.get("volume24hr", 0) or 0)
+                volume_total = float(m.get("volume", 0) or 0)
+                volume = volume24 if volume24 > 0 else volume_total
 
                 if isinstance(outcomes_raw, str):
                     try: outcomes = _json.loads(outcomes_raw)
@@ -310,18 +307,19 @@ async def fetch_polymarket_odds():
 
                 if len(outcomes) != 2 or len(prices) != 2: continue
 
-                # 確認兩個 outcome 都是 NBA 球隊名稱（單場勝負賭盤）
-                t1, t2 = outcomes[0].strip(), outcomes[1].strip()
+                # 確認兩個選項都是 NBA 球隊名稱（單場勝負賭盤）
+                t1, t2 = str(outcomes[0]).strip(), str(outcomes[1]).strip()
                 if t1 not in nba_teams or t2 not in nba_teams: continue
 
-                p1, p2 = float(prices[0]), float(prices[1])
+                try:
+                    p1, p2 = float(prices[0]), float(prices[1])
+                except: continue
                 if not (0 < p1 < 1 and 0 < p2 < 1): continue
 
-                # 成交量要夠（至少 $500 USDC）才納入
                 result[t1] = {
                     "prob": round(p1 * 100, 1),
                     "volume": round(volume),
-                    "reliable": volume >= 5000  # $5000 以上才算可信
+                    "reliable": volume >= 5000
                 }
                 result[t2] = {
                     "prob": round(p2 * 100, 1),
@@ -333,8 +331,7 @@ async def fetch_polymarket_odds():
             "status": "ok",
             "odds": result,
             "markets": len(result)//2,
-            "raw_count": len(events),
-            "date": today
+            "raw_count": len(events)
         }
     except Exception as e:
         return {"status": "error", "message": str(e), "odds": {}}
