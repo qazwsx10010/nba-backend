@@ -218,6 +218,11 @@ async def fetch_nba_stats():
                             TEAM_DATA[team_name]["opp"] = opp
 
                 if team_name in TEAM_DATA and wins + losses > 0:
+                    pass
+                elif team_name == "LA Clippers" and wins + losses > 0:
+                    team_name = "Los Angeles Clippers"
+
+                if team_name in TEAM_DATA and wins + losses > 0:
                     win_pct = wins / (wins + losses)
                     # ELO 根據勝率動態校準（基準 1500）
                     new_elo = round(1500 + (win_pct - 0.5) * 800)
