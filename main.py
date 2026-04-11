@@ -261,9 +261,9 @@ async def fetch_polymarket_odds():
     """從後端抓 Polymarket NBA 賽事勝率"""
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            # 使用正確的 Gamma API
+            # 用 sports 端點搜尋 NBA
             res = await client.get(
-                "https://gamma-api.polymarket.com/markets",
+                "https://gamma-api.polymarket.com/events",
                 params={
                     "active": "true",
                     "closed": "false",
@@ -275,33 +275,41 @@ async def fetch_polymarket_odds():
             )
             data = res.json()
 
-        markets = data if isinstance(data, list) else data.get("markets", [])
+        events = data if isinstance(data, list) else data.get("events", [])
         result = {}
-        for m in markets:
-            q = m.get("question", "")
-            # Polymarket NBA 格式通常是 "Will [Team] beat [Team]?" 或 "[Team1] vs [Team2]?"
-            outcomes = m.get("outcomes", "[]")
-            if isinstance(outcomes, str):
+
+        for event in events:
+            title = event.get("title", "")
+            markets = event.get("markets", [])
+            for m in markets:
+                q = m.get("question", "")
+                outcomes_raw = m.get("outcomes", "[]")
+                prices_raw = m.get("outcomePrices", "[]")
                 import json as _json
-                try: outcomes = _json.loads(outcomes)
-                except: outcomes = []
-            out_prices = m.get("outcomePrices", "[]")
-            if isinstance(out_prices, str):
-                import json as _json
-                try: out_prices = _json.loads(out_prices)
-                except: out_prices = []
+                if isinstance(outcomes_raw, str):
+                    try: outcomes = _json.loads(outcomes_raw)
+                    except: outcomes = []
+                else: outcomes = outcomes_raw
+                if isinstance(prices_raw, str):
+                    try: prices = _json.loads(prices_raw)
+                    except: prices = []
+                else: prices = prices_raw
 
-            volume = float(m.get("volume", 0) or 0)
-            if volume < 500: continue  # 跳過冷門市場
+                volume = float(m.get("volume", 0) or 0)
+                if volume < 100: continue
 
-            if len(outcomes) == 2 and len(out_prices) == 2:
-                p1 = float(out_prices[0])
-                p2 = float(out_prices[1])
-                if p1 > 0 and p2 > 0:
-                    result[outcomes[0]] = round(p1 * 100, 1)
-                    result[outcomes[1]] = round(p2 * 100, 1)
+                if len(outcomes) == 2 and len(prices) == 2:
+                    p1, p2 = float(prices[0]), float(prices[1])
+                    if 0 < p1 < 1 and 0 < p2 < 1:
+                        result[outcomes[0]] = round(p1 * 100, 1)
+                        result[outcomes[1]] = round(p2 * 100, 1)
 
-        return {"status": "ok", "odds": result, "markets": len(result)//2, "raw_count": len(markets)}
+        return {
+            "status": "ok",
+            "odds": result,
+            "markets": len(result)//2,
+            "raw_count": len(events)
+        }
     except Exception as e:
         return {"status": "error", "message": str(e), "odds": {}}
 
