@@ -357,8 +357,18 @@ async def get_today():
 async def get_history(days:int=90):
     if not DB_URL: return []
     conn=await get_db()
-    rows=await conn.fetch("SELECT * FROM predictions WHERE result IS NOT NULL AND game_date>=CURRENT_DATE-($1::text||' days')::interval ORDER BY game_date DESC,confidence DESC",str(days))
-    await conn.close(); return [dict(r) for r in rows]
+    try:
+        rows=await conn.fetch("""
+            SELECT * FROM predictions 
+            WHERE result IS NOT NULL 
+            AND game_date >= CURRENT_DATE - ($1 * INTERVAL '1 day')
+            ORDER BY game_date DESC, confidence DESC
+        """, days)
+        await conn.close()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        await conn.close()
+        return []
 
 @app.get("/api/stats")
 async def get_stats():
