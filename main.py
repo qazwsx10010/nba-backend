@@ -472,6 +472,23 @@ async def get_nba_stats(): return await fetch_nba_stats()
 @app.get("/api/polymarket")
 async def get_polymarket(): return await fetch_polymarket_odds()
 
+@app.get("/api/polymarket/debug")
+async def debug_polymarket():
+    """除錯用：直接回傳 Polymarket 原始資料"""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            # 試不同參數
+            r1 = await client.get("https://gamma-api.polymarket.com/events?active=true&closed=false&limit=5")
+            r2 = await client.get("https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=5&tag_slug=nba")
+            r3 = await client.get("https://gamma-api.polymarket.com/events?active=true&limit=5&tag_id=21")
+        return {
+            "events_raw": r1.json() if r1.status_code==200 else f"ERROR {r1.status_code}",
+            "markets_nba": r2.json() if r2.status_code==200 else f"ERROR {r2.status_code}",
+            "events_tag21": r3.json() if r3.status_code==200 else f"ERROR {r3.status_code}",
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.get("/api/tw-odds")
 async def get_tw_odds(date_str:str=None): return await fetch_tw_odds(date_str)
 
