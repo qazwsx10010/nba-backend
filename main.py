@@ -189,26 +189,103 @@ async def fetch_b2b_status():
 
 # ── NBA Stats API 更新球隊數據
 async def fetch_nba_stats():
+    """抓取 NBA 官方球隊數據，更新 ELO 和得失分"""
+    NBA_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "x-nba-stats-origin": "stats",
+        "x-nba-stats-token": "true",
+        "Origin": "https://www.nba.com",
+        "Referer": "https://www.nba.com/",
+        "Connection": "keep-alive",
+    }
     try:
-        async with httpx.AsyncClient(timeout=20,headers={"User-Agent":"Mozilla/5.0","Referer":"https://www.nba.com"}) as client:
-            res=await client.get("https://stats.nba.com/stats/leaguedashteamstats",params={
-                "MeasureType":"Base","PerMode":"PerGame","Season":"2025-26",
-                "SeasonType":"Regular Season","LastNGames":0,"DateFrom":"","DateTo":""
-            })
-            data=res.json()
-        headers=data["resultSets"][0]["headers"]
-        rows=data["resultSets"][0]["rowSet"]
-        stats={}
+        async with httpx.AsyncClient(timeout=30, headers=NBA_HEADERS, follow_redirects=True) as client:
+            res = await client.get(
+                "https://stats.nba.com/stats/leaguedashteamstats",
+                params={
+                    "MeasureType": "Base",
+                    "PerMode": "PerGame",
+                    "Season": "2025-26",
+                    "SeasonType": "Regular Season",
+                    "LastNGames": 0,
+                    "DateFrom": "",
+                    "DateTo": "",
+                    "GameScope": "",
+                    "PlayerExperience": "",
+                    "PlayerPosition": "",
+                    "StarterBench": "",
+                    "LeagueID": "00",
+                }
+            )
+            if res.status_code != 200:
+                return {"status": "error", "message": f"HTTP {res.status_code}"}
+            data = res.json()
+
+        headers = data["resultSets"][0]["headers"]
+        rows = data["resultSets"][0]["rowSet"]
+        stats = {}
         for row in rows:
-            d=dict(zip(headers,row))
-            team_name=d.get("TEAM_NAME","")
-            stats[team_name]={
-                "pts": round(d.get("PTS",110),1),
-                "opp_pts": round(d.get("OPP_PTS",110) if "OPP_PTS" in d else 110,1),
+            d = dict(zip(headers, row))
+            team_name = d.get("TEAM_NAME", "")
+            pts = round(d.get("PTS", 110), 1)
+            # 嘗試取得失分（NBA Stats 可能叫不同名稱）
+            opp_pts = round(d.get("OPP_PTS", d.get("DEFRTG", 110)), 1)
+            w = d.get("W", 0)
+            l = d.get("L", 0)
+            stats[team_name] = {
+                "pts": pts,
+                "opp_pts": opp_pts,
+                "wins": w,
+                "losses": l,
+                "win_pct": round(w/(w+l)*100) if (w+l) > 0 else 50,
             }
-        return {"status":"ok","stats":stats}
+
+        # 更新後端 TEAM_DATA（存入暫存，影響後續預測）
+        updated = 0
+        for team_name, s in stats.items():
+            if team_name in TEAM_DATA:
+                TEAM_DATA[team_name]["pts"] = s["pts"]
+                if s["opp_pts"] > 80:  # 確認是合理數值
+                    TEAM_DATA[team_name]["opp"] = s["opp_pts"]
+                updated += 1
+
+        return {"status": "ok", "stats": stats, "updated": updated, "total_teams": len(stats)}
     except Exception as e:
-        return {"status":"error","message":str(e)}
+        return {"status": "error", "message": str(e)}
+
+# ── Polymarket NBA 勝率（後端抓，解決 CORS 問題）
+async def fetch_polymarket_odds():
+    """從後端抓 Polymarket NBA 賽事勝率，解決前端 CORS 限制"""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            res = await client.get(
+                "https://clob.polymarket.com/markets",
+                params={"tag_slug": "nba", "active": "true", "closed": "false", "limit": "50", "order": "volume", "ascending": "false"}
+            )
+            data = res.json()
+
+        markets = data if isinstance(data, list) else data.get("markets", [])
+        result = {}
+        for m in markets:
+            q = m.get("question", "")
+            tokens = m.get("tokens", [])
+            volume = float(m.get("volume", 0))
+            if len(tokens) == 2 and " vs " in q and volume > 1000:
+                parts = q.replace(" to win?", "").replace("?", "").split(" vs ")
+                if len(parts) == 2:
+                    t1, t2 = parts[0].strip(), parts[1].strip()
+                    p1 = float(tokens[0].get("price", 0))
+                    p2 = float(tokens[1].get("price", 0))
+                    if p1 > 0 and p2 > 0:
+                        total = p1 + p2
+                        result[t1] = round(p1/total*100, 1)
+                        result[t2] = round(p2/total*100, 1)
+        return {"status": "ok", "odds": result, "markets": len(result)//2}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "odds": {}}
 
 # ── 台灣運彩讓分
 async def fetch_tw_odds(target_date=None):
@@ -342,6 +419,9 @@ async def get_b2b(): return await fetch_b2b_status()
 
 @app.get("/api/nba-stats")
 async def get_nba_stats(): return await fetch_nba_stats()
+
+@app.get("/api/polymarket")
+async def get_polymarket(): return await fetch_polymarket_odds()
 
 @app.get("/api/tw-odds")
 async def get_tw_odds(date_str:str=None): return await fetch_tw_odds(date_str)
