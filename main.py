@@ -269,10 +269,7 @@ async def fetch_polymarket_odds():
                 params={
                     "active": "true",
                     "closed": "false",
-                    "limit": "100",
-                    "sports_market_types": "moneyline",
-                    "start_date_min": today,
-                    "start_date_max": tomorrow,
+                    "limit": "200",
                     "order": "volume24hr",
                     "ascending": "false",
                 },
@@ -280,7 +277,13 @@ async def fetch_polymarket_odds():
             )
             data = res.json()
 
-        markets = data if isinstance(data, list) else []
+        # 回傳可能是 list 或 dict
+        if isinstance(data, list):
+            markets = data
+        elif isinstance(data, dict):
+            markets = data.get("markets", data.get("data", []))
+        else:
+            markets = []
         result = {}
 
         nba_teams = {
@@ -324,7 +327,7 @@ async def fetch_polymarket_odds():
             "status": "ok",
             "odds": result,
             "markets": len(result)//2,
-            "raw_count": len(events)
+            "raw_count": len(markets)
         }
     except Exception as e:
         return {"status": "error", "message": str(e), "odds": {}}
