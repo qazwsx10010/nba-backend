@@ -261,15 +261,14 @@ async def fetch_polymarket_odds():
     """從後端抓 Polymarket NBA 今日單場勝負賭盤"""
     try:
         import json as _json
-        today = date.today().strftime("%Y-%m-%dT00:00:00Z")
-        tomorrow = (date.today() + timedelta(days=2)).strftime("%Y-%m-%dT00:00:00Z")
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=20) as client:
+            # 用 /events 端點，交易量是 event 層級的總量
             res = await client.get(
-                "https://gamma-api.polymarket.com/markets",
+                "https://gamma-api.polymarket.com/events",
                 params={
                     "active": "true",
                     "closed": "false",
-                    "limit": "200",
+                    "limit": "100",
                     "order": "volume24hr",
                     "ascending": "false",
                 },
@@ -277,13 +276,7 @@ async def fetch_polymarket_odds():
             )
             data = res.json()
 
-        # 回傳可能是 list 或 dict
-        if isinstance(data, list):
-            markets = data
-        elif isinstance(data, dict):
-            markets = data.get("markets", data.get("data", []))
-        else:
-            markets = []
+        events = data if isinstance(data, list) else data.get("events", [])
         result = {}
 
         nba_teams = {
@@ -293,41 +286,45 @@ async def fetch_polymarket_odds():
             "Trail Blazers","Kings","Spurs","Raptors","Jazz","Wizards"
         }
 
-        for m in markets:
-            outcomes_raw = m.get("outcomes", "[]")
-            prices_raw = m.get("outcomePrices", "[]")
-            volume24 = float(m.get("volume24hr", 0) or 0)
-            volume_total = float(m.get("volume", 0) or 0)
-            volume = volume24 if volume24 > 0 else volume_total
+        for event in events:
+            # event 層級的交易量（這才是截圖上顯示的數字）
+            event_volume = float(event.get("volume24hr", 0) or event.get("volume", 0) or 0)
 
-            if isinstance(outcomes_raw, str):
-                try: outcomes = _json.loads(outcomes_raw)
+            for m in event.get("markets", []):
+                outcomes_raw = m.get("outcomes", "[]")
+                prices_raw = m.get("outcomePrices", "[]")
+
+                if isinstance(outcomes_raw, str):
+                    try: outcomes = _json.loads(outcomes_raw)
+                    except: continue
+                else: outcomes = outcomes_raw
+
+                if isinstance(prices_raw, str):
+                    try: prices = _json.loads(prices_raw)
+                    except: continue
+                else: prices = prices_raw
+
+                if len(outcomes) != 2 or len(prices) != 2: continue
+
+                t1, t2 = str(outcomes[0]).strip(), str(outcomes[1]).strip()
+                # 兩個都必須是 NBA 球隊名稱
+                if t1 not in nba_teams or t2 not in nba_teams: continue
+
+                try:
+                    p1, p2 = float(prices[0]), float(prices[1])
                 except: continue
-            else: outcomes = outcomes_raw
+                if not (0 < p1 < 1 and 0 < p2 < 1): continue
 
-            if isinstance(prices_raw, str):
-                try: prices = _json.loads(prices_raw)
-                except: continue
-            else: prices = prices_raw
-
-            if len(outcomes) != 2 or len(prices) != 2: continue
-
-            t1, t2 = str(outcomes[0]).strip(), str(outcomes[1]).strip()
-            if t1 not in nba_teams or t2 not in nba_teams: continue
-
-            try:
-                p1, p2 = float(prices[0]), float(prices[1])
-            except: continue
-            if not (0 < p1 < 1 and 0 < p2 < 1): continue
-
-            result[t1] = {"prob": round(p1*100,1), "volume": round(volume), "reliable": volume>=5000}
-            result[t2] = {"prob": round(p2*100,1), "volume": round(volume), "reliable": volume>=5000}
+                # 用 event 層級的交易量
+                vol = event_volume
+                result[t1] = {"prob": round(p1*100,1), "volume": round(vol), "reliable": vol>=5000}
+                result[t2] = {"prob": round(p2*100,1), "volume": round(vol), "reliable": vol>=5000}
 
         return {
             "status": "ok",
             "odds": result,
             "markets": len(result)//2,
-            "raw_count": len(markets)
+            "raw_count": len(events)
         }
     except Exception as e:
         return {"status": "error", "message": str(e), "odds": {}}
