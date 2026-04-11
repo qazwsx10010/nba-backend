@@ -189,7 +189,7 @@ async def fetch_b2b_status():
 
 # ── NBA Stats API 更新球隊數據
 async def fetch_nba_stats():
-    """用 ESPN standings API 抓取球隊勝敗數據"""
+    """用 ESPN standings API 抓取球隊勝敗數據 + 近期10場狀態"""
     try:
         updated = 0
         async with httpx.AsyncClient(timeout=20) as client:
@@ -204,33 +204,59 @@ async def fetch_nba_stats():
         for conf in children:
             for entry in conf.get("standings", {}).get("entries", []):
                 team_name = entry.get("team", {}).get("displayName", "")
-                wins = losses = 0
-                for stat in entry.get("stats", []):
-                    if stat.get("name") == "wins": wins = int(stat.get("value", 0))
-                    if stat.get("name") == "losses": losses = int(stat.get("value", 0))
-                    if stat.get("name") == "pointsFor":
-                        pts = round(float(stat.get("value", 110)), 1)
-                        if team_name in TEAM_DATA:
-                            TEAM_DATA[team_name]["pts"] = pts
-                    if stat.get("name") == "pointsAgainst":
-                        opp = round(float(stat.get("value", 110)), 1)
-                        if team_name in TEAM_DATA:
-                            TEAM_DATA[team_name]["opp"] = opp
-
-                if team_name in TEAM_DATA and wins + losses > 0:
-                    pass
-                elif team_name == "LA Clippers" and wins + losses > 0:
+                if team_name == "LA Clippers":
                     team_name = "Los Angeles Clippers"
+                wins = losses = 0
+                pts = opp = None
+                for stat in entry.get("stats", []):
+                    n = stat.get("name","")
+                    v = stat.get("value", 0)
+                    if n == "wins": wins = int(v)
+                    if n == "losses": losses = int(v)
+                    if n == "pointsFor": pts = round(float(v), 1)
+                    if n == "pointsAgainst": opp = round(float(v), 1)
 
                 if team_name in TEAM_DATA and wins + losses > 0:
                     win_pct = wins / (wins + losses)
-                    # ELO 根據勝率動態校準（基準 1500）
                     new_elo = round(1500 + (win_pct - 0.5) * 800)
                     TEAM_DATA[team_name]["elo"] = new_elo
+                    if pts and pts > 80: TEAM_DATA[team_name]["pts"] = pts
+                    if opp and opp > 80: TEAM_DATA[team_name]["opp"] = opp
                     stats[team_name] = {"wins": wins, "losses": losses, "win_pct": round(win_pct*100, 1), "elo": new_elo}
                     updated += 1
 
-        print(f"✅ ESPN Standings 更新 {updated} 支球隊")
+        # 額外抓近期10場勝率（用 ESPN team record）
+        async with httpx.AsyncClient(timeout=20) as client:
+            res2 = await client.get(
+                "https://site.api.espn.com/apis/v2/sports/basketball/nba/standings",
+                params={"season": "2026", "group": "league"}
+            )
+            data2 = res2.json()
+
+        # 從 lastTen 欄位取近期10場
+        for conf in data2.get("children", []):
+            for entry in conf.get("standings", {}).get("entries", []):
+                team_name = entry.get("team", {}).get("displayName", "")
+                if team_name == "LA Clippers": team_name = "Los Angeles Clippers"
+                for stat in entry.get("stats", []):
+                    if stat.get("name") == "lastTen":
+                        val = stat.get("displayValue", "")  # 格式如 "6-4"
+                        try:
+                            parts = val.split("-")
+                            recent_wins = int(parts[0])
+                            recent_losses = int(parts[1])
+                            recent_pct = recent_wins / (recent_wins + recent_losses)
+                            # 近期狀態調整 ELO（±50分範圍）
+                            if team_name in TEAM_DATA:
+                                adj = round((recent_pct - 0.5) * 100)
+                                TEAM_DATA[team_name]["recent_adj"] = adj
+                                TEAM_DATA[team_name]["elo"] = TEAM_DATA[team_name]["elo"] + adj
+                                if team_name in stats:
+                                    stats[team_name]["recent"] = val
+                                    stats[team_name]["recent_adj"] = adj
+                        except: pass
+
+        print(f"✅ ESPN Stats 更新 {updated} 支球隊（含近期狀態）")
         return {"status": "ok", "updated": updated, "stats": stats}
     except Exception as e:
         return {"status": "error", "message": str(e)}
