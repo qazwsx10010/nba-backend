@@ -261,8 +261,8 @@ async def fetch_polymarket_odds():
     """從後端抓 Polymarket NBA 今日單場勝負賭盤"""
     try:
         import json as _json
+        import re
         async with httpx.AsyncClient(timeout=20) as client:
-            # 用 /events 端點，交易量是 event 層級的總量
             res = await client.get(
                 "https://gamma-api.polymarket.com/events",
                 params={
@@ -287,12 +287,43 @@ async def fetch_polymarket_odds():
         }
 
         for event in events:
-            # event 層級的交易量（這才是截圖上顯示的數字）
             event_volume = float(event.get("volume24hr", 0) or event.get("volume", 0) or 0)
+            event_title = event.get("title", "")
 
+            # 只處理 NBA 相關的 event（title 包含球隊名稱）
+            home_team = away_team = None
+            for team in nba_teams:
+                if team in event_title:
+                    if home_team is None:
+                        home_team = team
+                    elif away_team is None:
+                        away_team = team
+                        break
+
+            if not home_team or not away_team:
+                continue
+
+            # 找 moneyline market（"Will [Team] win..."）
             for m in event.get("markets", []):
+                question = m.get("question", "")
                 outcomes_raw = m.get("outcomes", "[]")
                 prices_raw = m.get("outcomePrices", "[]")
+
+                # 只要「Will [Team] win」類型的市場
+                if not question.startswith("Will ") or " win" not in question:
+                    continue
+                # 排除 draw、spread、total 等
+                if any(x in question.lower() for x in ["draw", "spread", "cover", "total", "points", "quarter"]):
+                    continue
+
+                # 找出這個 market 是哪個隊
+                winner_team = None
+                for team in nba_teams:
+                    if team in question:
+                        winner_team = team
+                        break
+                if not winner_team:
+                    continue
 
                 if isinstance(outcomes_raw, str):
                     try: outcomes = _json.loads(outcomes_raw)
@@ -304,21 +335,21 @@ async def fetch_polymarket_odds():
                     except: continue
                 else: prices = prices_raw
 
-                if len(outcomes) != 2 or len(prices) != 2: continue
+                # 格式是 ["Yes","No"]，Yes 的機率就是該隊勝率
+                if len(outcomes) == 2 and outcomes[0] == "Yes":
+                    try:
+                        win_prob = float(prices[0])
+                        lose_prob = float(prices[1])
+                    except: continue
+                    if not (0 < win_prob < 1): continue
 
-                t1, t2 = str(outcomes[0]).strip(), str(outcomes[1]).strip()
-                # 兩個都必須是 NBA 球隊名稱
-                if t1 not in nba_teams or t2 not in nba_teams: continue
+                    # 確定對手
+                    loser_team = away_team if winner_team == home_team else home_team
 
-                try:
-                    p1, p2 = float(prices[0]), float(prices[1])
-                except: continue
-                if not (0 < p1 < 1 and 0 < p2 < 1): continue
-
-                # 用 event 層級的交易量
-                vol = event_volume
-                result[t1] = {"prob": round(p1*100,1), "volume": round(vol), "reliable": vol>=5000}
-                result[t2] = {"prob": round(p2*100,1), "volume": round(vol), "reliable": vol>=5000}
+                    vol = event_volume
+                    result[winner_team] = {"prob": round(win_prob*100,1), "volume": round(vol), "reliable": vol>=5000}
+                    result[loser_team] = {"prob": round(lose_prob*100,1), "volume": round(vol), "reliable": vol>=5000}
+                    break  # 每個 event 只取第一個 moneyline
 
         return {
             "status": "ok",
