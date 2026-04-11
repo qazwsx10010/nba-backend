@@ -258,57 +258,83 @@ async def fetch_nba_stats():
 
 # ── Polymarket NBA 勝率（後端抓，解決 CORS 問題）
 async def fetch_polymarket_odds():
-    """從後端抓 Polymarket NBA 賽事勝率"""
+    """從後端抓 Polymarket NBA 今日單場勝負賭盤"""
     try:
+        today = date.today().strftime("%Y-%m-%d")
+        tomorrow = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+
         async with httpx.AsyncClient(timeout=15) as client:
-            # 用 sports 端點搜尋 NBA
             res = await client.get(
                 "https://gamma-api.polymarket.com/events",
                 params={
                     "active": "true",
                     "closed": "false",
                     "tag_slug": "nba",
-                    "limit": "50",
+                    "limit": "100",
                     "order": "volume24hr",
-                    "ascending": "false"
+                    "ascending": "false",
+                    "start_date_min": today,   # 只抓今天開始的賭盤
+                    "start_date_max": tomorrow,
                 }
             )
             data = res.json()
 
+        import json as _json
         events = data if isinstance(data, list) else data.get("events", [])
         result = {}
 
+        # NBA 球隊名稱列表（用來判斷是不是單場勝負）
+        nba_teams = {
+            "Hawks","Celtics","Nets","Hornets","Bulls","Cavaliers","Mavericks","Nuggets",
+            "Pistons","Warriors","Rockets","Pacers","Clippers","Lakers","Grizzlies","Heat",
+            "Bucks","Timberwolves","Pelicans","Knicks","Thunder","Magic","76ers","Suns",
+            "Trail Blazers","Kings","Spurs","Raptors","Jazz","Wizards"
+        }
+
         for event in events:
-            title = event.get("title", "")
             markets = event.get("markets", [])
             for m in markets:
-                q = m.get("question", "")
                 outcomes_raw = m.get("outcomes", "[]")
                 prices_raw = m.get("outcomePrices", "[]")
-                import json as _json
+                volume = float(m.get("volume24hr", 0) or m.get("volume", 0) or 0)
+
                 if isinstance(outcomes_raw, str):
                     try: outcomes = _json.loads(outcomes_raw)
-                    except: outcomes = []
+                    except: continue
                 else: outcomes = outcomes_raw
+
                 if isinstance(prices_raw, str):
                     try: prices = _json.loads(prices_raw)
-                    except: prices = []
+                    except: continue
                 else: prices = prices_raw
 
-                volume = float(m.get("volume", 0) or 0)
-                if volume < 100: continue
+                if len(outcomes) != 2 or len(prices) != 2: continue
 
-                if len(outcomes) == 2 and len(prices) == 2:
-                    p1, p2 = float(prices[0]), float(prices[1])
-                    if 0 < p1 < 1 and 0 < p2 < 1:
-                        result[outcomes[0]] = round(p1 * 100, 1)
-                        result[outcomes[1]] = round(p2 * 100, 1)
+                # 確認兩個 outcome 都是 NBA 球隊名稱（單場勝負賭盤）
+                t1, t2 = outcomes[0].strip(), outcomes[1].strip()
+                if t1 not in nba_teams or t2 not in nba_teams: continue
+
+                p1, p2 = float(prices[0]), float(prices[1])
+                if not (0 < p1 < 1 and 0 < p2 < 1): continue
+
+                # 成交量要夠（至少 $500 USDC）才納入
+                result[t1] = {
+                    "prob": round(p1 * 100, 1),
+                    "volume": round(volume),
+                    "reliable": volume >= 5000  # $5000 以上才算可信
+                }
+                result[t2] = {
+                    "prob": round(p2 * 100, 1),
+                    "volume": round(volume),
+                    "reliable": volume >= 5000
+                }
 
         return {
             "status": "ok",
             "odds": result,
             "markets": len(result)//2,
-            "raw_count": len(events)
+            "raw_count": len(events),
+            "date": today
         }
     except Exception as e:
         return {"status": "error", "message": str(e), "odds": {}}
