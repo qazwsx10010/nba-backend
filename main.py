@@ -261,14 +261,15 @@ async def fetch_polymarket_odds():
     """從後端抓 Polymarket NBA 今日單場勝負賭盤"""
     try:
         import json as _json
-        import re
         async with httpx.AsyncClient(timeout=20) as client:
+            # 用 basketball tag 篩選，不依賴排名
             res = await client.get(
                 "https://gamma-api.polymarket.com/events",
                 params={
                     "active": "true",
                     "closed": "false",
-                    "limit": "100",
+                    "limit": "50",
+                    "tag_slug": "basketball",
                     "order": "volume24hr",
                     "ascending": "false",
                 },
@@ -286,44 +287,39 @@ async def fetch_polymarket_odds():
             "Trail Blazers","Kings","Spurs","Raptors","Jazz","Wizards"
         }
 
+        # 冰球或其他運動隊名（避免誤判）
+        non_nba_keywords = ["Oilers","Flames","Leafs","Canucks","Jets","Senators",
+                           "IPL","Premier League","Champions League","Arsenal","Chelsea"]
+
         for event in events:
             event_volume = float(event.get("volume24hr", 0) or event.get("volume", 0) or 0)
             event_title = event.get("title", "")
 
-            # 只處理 NBA 相關的 event（title 包含球隊名稱）
-            home_team = away_team = None
-            for team in nba_teams:
-                if team in event_title:
-                    if home_team is None:
-                        home_team = team
-                    elif away_team is None:
-                        away_team = team
-                        break
-
-            if not home_team or not away_team:
+            # 跳過非 NBA 賽事
+            if any(kw in event_title for kw in non_nba_keywords):
                 continue
 
-            # 找 moneyline market（"Will [Team] win..."）
+            # 從 title 找出兩支 NBA 球隊
+            found_teams = [t for t in nba_teams if t in event_title]
+            if len(found_teams) < 2:
+                continue
+
+            home_team, away_team = found_teams[0], found_teams[1]
+
+            # 找 moneyline market
             for m in event.get("markets", []):
                 question = m.get("question", "")
-                outcomes_raw = m.get("outcomes", "[]")
-                prices_raw = m.get("outcomePrices", "[]")
-
-                # 只要「Will [Team] win」類型的市場
                 if not question.startswith("Will ") or " win" not in question:
                     continue
-                # 排除 draw、spread、total 等
-                if any(x in question.lower() for x in ["draw", "spread", "cover", "total", "points", "quarter"]):
+                if any(x in question.lower() for x in ["draw","spread","cover","total","points","quarter","half"]):
                     continue
 
-                # 找出這個 market 是哪個隊
-                winner_team = None
-                for team in nba_teams:
-                    if team in question:
-                        winner_team = team
-                        break
+                winner_team = next((t for t in nba_teams if t in question), None)
                 if not winner_team:
                     continue
+
+                outcomes_raw = m.get("outcomes", "[]")
+                prices_raw = m.get("outcomePrices", "[]")
 
                 if isinstance(outcomes_raw, str):
                     try: outcomes = _json.loads(outcomes_raw)
@@ -335,7 +331,6 @@ async def fetch_polymarket_odds():
                     except: continue
                 else: prices = prices_raw
 
-                # 格式是 ["Yes","No"]，Yes 的機率就是該隊勝率
                 if len(outcomes) == 2 and outcomes[0] == "Yes":
                     try:
                         win_prob = float(prices[0])
@@ -343,20 +338,18 @@ async def fetch_polymarket_odds():
                     except: continue
                     if not (0 < win_prob < 1): continue
 
-                    # 確定對手
                     loser_team = away_team if winner_team == home_team else home_team
-
                     vol = event_volume
                     result[winner_team] = {"prob": round(win_prob*100,1), "volume": round(vol), "reliable": vol>=5000}
                     result[loser_team] = {"prob": round(lose_prob*100,1), "volume": round(vol), "reliable": vol>=5000}
-                    break  # 每個 event 只取第一個 moneyline
+                    break
 
         return {
             "status": "ok",
             "odds": result,
             "markets": len(result)//2,
             "raw_count": len(events),
-            "debug_titles": [ev.get("title","") for ev in events if any(t in ev.get("title","") for t in nba_teams)][:10]
+            "debug_titles": [ev.get("title","") for ev in events][:15]
         }
     except Exception as e:
         return {"status": "error", "message": str(e), "odds": {}}
