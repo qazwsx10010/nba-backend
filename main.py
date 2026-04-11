@@ -462,12 +462,21 @@ async def fetch_and_predict():
             else:
                 bet=hEn if mp>=0.5 else aEn; odds=h2hH if mp>=0.5 else h2hA; btype="不讓分"
             ev=(conf/100*odds-1)*100
-            exists=await conn.fetchval("SELECT id FROM predictions WHERE game_date=$1 AND home_team=$2 AND away_team=$3",today,hEn,aEn)
+            exists=await conn.fetchrow("SELECT id,result FROM predictions WHERE game_date=$1 AND home_team=$2 AND away_team=$3",today,hEn,aEn)
             if not exists:
+                # 新增預測
                 await conn.execute("""
                     INSERT INTO predictions(game_date,home_team,away_team,predicted_winner,confidence,bet_type,bet_odds,ev_pct,spread_line,model_spread,home_b2b,away_b2b)
                     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
                 """,today,hEn,aEn,bet,conf,btype,odds,ev,spLine,ms,home_b2b,away_b2b)
+                saved+=1
+            elif exists["result"] is None:
+                # 比賽尚未結束 → 更新為最新傷兵/模型數據
+                await conn.execute("""
+                    UPDATE predictions SET predicted_winner=$1,confidence=$2,bet_type=$3,
+                    bet_odds=$4,ev_pct=$5,spread_line=$6,model_spread=$7,home_b2b=$8,away_b2b=$9
+                    WHERE id=$10
+                """,bet,conf,btype,odds,ev,spLine,ms,home_b2b,away_b2b,exists["id"])
                 saved+=1
         await conn.close()
         print(f"✅ 儲存 {saved} 場")
@@ -646,5 +655,7 @@ async def startup():
     scheduler.add_job(update_results,"cron",hour=2,minute=0)
     # NBA Stats 每天早上 7 點更新（早於預測的 8 點）
     scheduler.add_job(fetch_nba_stats,"cron",hour=7,minute=0)
+    # 下午 3 點重新抓傷兵並更新預測（涵蓋晚場比賽最新傷兵）
+    scheduler.add_job(fetch_and_predict,"cron",hour=15,minute=0)
     scheduler.start()
     print("✅ 後端啟動完成")
