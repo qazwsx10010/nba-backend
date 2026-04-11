@@ -261,24 +261,28 @@ async def fetch_polymarket_odds():
     """從後端抓 Polymarket NBA 今日單場勝負賭盤"""
     try:
         import json as _json
+        today = date.today().strftime("%Y-%m-%dT00:00:00Z")
+        tomorrow = (date.today() + timedelta(days=2)).strftime("%Y-%m-%dT00:00:00Z")
         async with httpx.AsyncClient(timeout=15) as client:
             res = await client.get(
-                "https://gamma-api.polymarket.com/events",
+                "https://gamma-api.polymarket.com/markets",
                 params={
                     "active": "true",
                     "closed": "false",
-                    "tag_slug": "nba",
                     "limit": "100",
+                    "sports_market_types": "moneyline",
+                    "start_date_min": today,
+                    "start_date_max": tomorrow,
                     "order": "volume24hr",
                     "ascending": "false",
-                }
+                },
+                headers={"User-Agent": "Mozilla/5.0"}
             )
             data = res.json()
 
-        events = data if isinstance(data, list) else data.get("events", [])
+        markets = data if isinstance(data, list) else []
         result = {}
 
-        # NBA 球隊短名稱（用來確認是單場勝負賭盤）
         nba_teams = {
             "Hawks","Celtics","Nets","Hornets","Bulls","Cavaliers","Mavericks","Nuggets",
             "Pistons","Warriors","Rockets","Pacers","Clippers","Lakers","Grizzlies","Heat",
@@ -286,46 +290,35 @@ async def fetch_polymarket_odds():
             "Trail Blazers","Kings","Spurs","Raptors","Jazz","Wizards"
         }
 
-        for event in events:
-            markets = event.get("markets", [])
-            for m in markets:
-                outcomes_raw = m.get("outcomes", "[]")
-                prices_raw = m.get("outcomePrices", "[]")
-                volume24 = float(m.get("volume24hr", 0) or 0)
-                volume_total = float(m.get("volume", 0) or 0)
-                volume = volume24 if volume24 > 0 else volume_total
+        for m in markets:
+            outcomes_raw = m.get("outcomes", "[]")
+            prices_raw = m.get("outcomePrices", "[]")
+            volume24 = float(m.get("volume24hr", 0) or 0)
+            volume_total = float(m.get("volume", 0) or 0)
+            volume = volume24 if volume24 > 0 else volume_total
 
-                if isinstance(outcomes_raw, str):
-                    try: outcomes = _json.loads(outcomes_raw)
-                    except: continue
-                else: outcomes = outcomes_raw
-
-                if isinstance(prices_raw, str):
-                    try: prices = _json.loads(prices_raw)
-                    except: continue
-                else: prices = prices_raw
-
-                if len(outcomes) != 2 or len(prices) != 2: continue
-
-                # 確認兩個選項都是 NBA 球隊名稱（單場勝負賭盤）
-                t1, t2 = str(outcomes[0]).strip(), str(outcomes[1]).strip()
-                if t1 not in nba_teams or t2 not in nba_teams: continue
-
-                try:
-                    p1, p2 = float(prices[0]), float(prices[1])
+            if isinstance(outcomes_raw, str):
+                try: outcomes = _json.loads(outcomes_raw)
                 except: continue
-                if not (0 < p1 < 1 and 0 < p2 < 1): continue
+            else: outcomes = outcomes_raw
 
-                result[t1] = {
-                    "prob": round(p1 * 100, 1),
-                    "volume": round(volume),
-                    "reliable": volume >= 5000
-                }
-                result[t2] = {
-                    "prob": round(p2 * 100, 1),
-                    "volume": round(volume),
-                    "reliable": volume >= 5000
-                }
+            if isinstance(prices_raw, str):
+                try: prices = _json.loads(prices_raw)
+                except: continue
+            else: prices = prices_raw
+
+            if len(outcomes) != 2 or len(prices) != 2: continue
+
+            t1, t2 = str(outcomes[0]).strip(), str(outcomes[1]).strip()
+            if t1 not in nba_teams or t2 not in nba_teams: continue
+
+            try:
+                p1, p2 = float(prices[0]), float(prices[1])
+            except: continue
+            if not (0 < p1 < 1 and 0 < p2 < 1): continue
+
+            result[t1] = {"prob": round(p1*100,1), "volume": round(volume), "reliable": volume>=5000}
+            result[t2] = {"prob": round(p2*100,1), "volume": round(volume), "reliable": volume>=5000}
 
         return {
             "status": "ok",
