@@ -189,70 +189,62 @@ async def fetch_b2b_status():
 
 # ── NBA Stats API 更新球隊數據
 async def fetch_nba_stats():
-    """抓取 NBA 官方球隊數據，更新 ELO 和得失分"""
-    NBA_HEADERS = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "x-nba-stats-origin": "stats",
-        "x-nba-stats-token": "true",
-        "Origin": "https://www.nba.com",
-        "Referer": "https://www.nba.com/",
-        "Connection": "keep-alive",
-    }
+    """用 ESPN API 抓取球隊得失分數據（免費、不被擋）"""
     try:
-        async with httpx.AsyncClient(timeout=30, headers=NBA_HEADERS, follow_redirects=True) as client:
+        updated = 0
+        async with httpx.AsyncClient(timeout=20) as client:
+            # ESPN 球隊賽季數據
             res = await client.get(
-                "https://stats.nba.com/stats/leaguedashteamstats",
-                params={
-                    "MeasureType": "Base",
-                    "PerMode": "PerGame",
-                    "Season": "2025-26",
-                    "SeasonType": "Regular Season",
-                    "LastNGames": 0,
-                    "DateFrom": "",
-                    "DateTo": "",
-                    "GameScope": "",
-                    "PlayerExperience": "",
-                    "PlayerPosition": "",
-                    "StarterBench": "",
-                    "LeagueID": "00",
-                }
+                "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams",
+                params={"limit": 32}
             )
-            if res.status_code != 200:
-                return {"status": "error", "message": f"HTTP {res.status_code}"}
             data = res.json()
 
-        headers = data["resultSets"][0]["headers"]
-        rows = data["resultSets"][0]["rowSet"]
-        stats = {}
-        for row in rows:
-            d = dict(zip(headers, row))
-            team_name = d.get("TEAM_NAME", "")
-            pts = round(d.get("PTS", 110), 1)
-            # 嘗試取得失分（NBA Stats 可能叫不同名稱）
-            opp_pts = round(d.get("OPP_PTS", d.get("DEFRTG", 110)), 1)
-            w = d.get("W", 0)
-            l = d.get("L", 0)
-            stats[team_name] = {
-                "pts": pts,
-                "opp_pts": opp_pts,
-                "wins": w,
-                "losses": l,
-                "win_pct": round(w/(w+l)*100) if (w+l) > 0 else 50,
-            }
+        ESPN_TO_FULL = {
+            "Atlanta Hawks":"Atlanta Hawks","Boston Celtics":"Boston Celtics",
+            "Brooklyn Nets":"Brooklyn Nets","Charlotte Hornets":"Charlotte Hornets",
+            "Chicago Bulls":"Chicago Bulls","Cleveland Cavaliers":"Cleveland Cavaliers",
+            "Dallas Mavericks":"Dallas Mavericks","Denver Nuggets":"Denver Nuggets",
+            "Detroit Pistons":"Detroit Pistons","Golden State Warriors":"Golden State Warriors",
+            "Houston Rockets":"Houston Rockets","Indiana Pacers":"Indiana Pacers",
+            "LA Clippers":"Los Angeles Clippers","Los Angeles Lakers":"Los Angeles Lakers",
+            "Memphis Grizzlies":"Memphis Grizzlies","Miami Heat":"Miami Heat",
+            "Milwaukee Bucks":"Milwaukee Bucks","Minnesota Timberwolves":"Minnesota Timberwolves",
+            "New Orleans Pelicans":"New Orleans Pelicans","New York Knicks":"New York Knicks",
+            "Oklahoma City Thunder":"Oklahoma City Thunder","Orlando Magic":"Orlando Magic",
+            "Philadelphia 76ers":"Philadelphia 76ers","Phoenix Suns":"Phoenix Suns",
+            "Portland Trail Blazers":"Portland Trail Blazers","Sacramento Kings":"Sacramento Kings",
+            "San Antonio Spurs":"San Antonio Spurs","Toronto Raptors":"Toronto Raptors",
+            "Utah Jazz":"Utah Jazz","Washington Wizards":"Washington Wizards",
+        }
 
-        # 更新後端 TEAM_DATA（存入暫存，影響後續預測）
-        updated = 0
+        stats = {}
+        teams = data.get("sports",[{}])[0].get("leagues",[{}])[0].get("teams",[])
+        for t in teams:
+            team = t.get("team",{})
+            name = team.get("displayName","")
+            full_name = ESPN_TO_FULL.get(name, name)
+            record = team.get("record",{}).get("items",[])
+            wins = losses = 0
+            for r in record:
+                if r.get("type") == "total":
+                    for stat in r.get("stats",[]):
+                        if stat.get("name") == "wins": wins = int(stat.get("value",0))
+                        if stat.get("name") == "losses": losses = int(stat.get("value",0))
+            stats[full_name] = {"wins": wins, "losses": losses, "win_pct": round(wins/(wins+losses)*100) if wins+losses>0 else 50}
+
+        # 更新 TEAM_DATA 的 ELO（用勝率重新校準）
         for team_name, s in stats.items():
             if team_name in TEAM_DATA:
-                TEAM_DATA[team_name]["pts"] = s["pts"]
-                if s["opp_pts"] > 80:  # 確認是合理數值
-                    TEAM_DATA[team_name]["opp"] = s["opp_pts"]
+                # 用勝率動態調整 ELO（基準 1500，勝率每差1%調整10分）
+                base_elo = 1500
+                win_pct = s["win_pct"]
+                new_elo = base_elo + (win_pct - 50) * 10
+                TEAM_DATA[team_name]["elo"] = round(new_elo)
                 updated += 1
 
-        return {"status": "ok", "stats": stats, "updated": updated, "total_teams": len(stats)}
+        print(f"✅ ESPN Stats 更新 {updated} 支球隊 ELO")
+        return {"status": "ok", "updated": updated, "stats": stats}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -616,7 +608,7 @@ async def startup():
     await init_db()
     scheduler.add_job(fetch_and_predict,"cron",hour=8,minute=0)
     scheduler.add_job(update_results,"cron",hour=2,minute=0)
-    # NBA Stats 每週一早上9點更新
-    scheduler.add_job(fetch_nba_stats,"cron",day_of_week="mon",hour=9,minute=0)
+    # NBA Stats 每天早上 7 點更新（早於預測的 8 點）
+    scheduler.add_job(fetch_nba_stats,"cron",hour=7,minute=0)
     scheduler.start()
     print("✅ 後端啟動完成")
