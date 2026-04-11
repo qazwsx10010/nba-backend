@@ -216,13 +216,27 @@ async def fetch_nba_stats():
                     if n == "pointsFor": pts = round(float(v), 1)
                     if n == "pointsAgainst": opp = round(float(v), 1)
 
-                if team_name in TEAM_DATA and wins + losses > 0:
+        if team_name in TEAM_DATA and wins + losses > 0:
                     win_pct = wins / (wins + losses)
                     new_elo = round(1500 + (win_pct - 0.5) * 800)
                     TEAM_DATA[team_name]["elo"] = new_elo
                     if pts and pts > 80: TEAM_DATA[team_name]["pts"] = pts
                     if opp and opp > 80: TEAM_DATA[team_name]["opp"] = opp
-                    stats[team_name] = {"wins": wins, "losses": losses, "win_pct": round(win_pct*100, 1), "elo": new_elo}
+                    # 解析主客場勝率
+                    home_w=home_l=away_w=away_l=0
+                    for stat in entry.get("stats", []):
+                        n=stat.get("name","")
+                        if n=="homeWins": home_w=int(stat.get("value",0))
+                        if n=="homeLosses": home_l=int(stat.get("value",0))
+                        if n=="roadWins": away_w=int(stat.get("value",0))
+                        if n=="roadLosses": away_l=int(stat.get("value",0))
+                    home_win_pct=round(home_w/(home_w+home_l)*100,1) if home_w+home_l>0 else 50
+                    away_win_pct=round(away_w/(away_w+away_l)*100,1) if away_w+away_l>0 else 50
+                    stats[team_name] = {
+                        "wins": wins, "losses": losses,
+                        "win_pct": round(win_pct*100, 1), "elo": new_elo,
+                        "home_win_pct": home_win_pct, "away_win_pct": away_win_pct
+                    }
                     updated += 1
 
         # 額外抓近期10場勝率（用 ESPN team record）
