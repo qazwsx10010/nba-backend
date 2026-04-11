@@ -476,7 +476,7 @@ async def update_results():
 
 # ── API 路由
 @app.get("/")
-async def root(): return {"status":"ok","message":"NBA 預測系統後端運作中"}
+async def root(): return {"status":"ok","message":"NBA 預測系統後端運作中","version":"v3.1-polymarket"}
 
 @app.get("/api/injuries")
 async def get_injuries(): return await fetch_espn_injuries()
