@@ -355,7 +355,8 @@ async def fetch_polymarket_odds():
             "status": "ok",
             "odds": result,
             "markets": len(result)//2,
-            "raw_count": len(events)
+            "raw_count": len(events),
+            "debug_titles": [ev.get("title","") for ev in events if any(t in ev.get("title","") for t in nba_teams)][:10]
         }
     except Exception as e:
         return {"status": "error", "message": str(e), "odds": {}}
