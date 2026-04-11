@@ -189,61 +189,43 @@ async def fetch_b2b_status():
 
 # ── NBA Stats API 更新球隊數據
 async def fetch_nba_stats():
-    """用 ESPN API 抓取球隊得失分數據（免費、不被擋）"""
+    """用 ESPN standings API 抓取球隊勝敗數據"""
     try:
         updated = 0
         async with httpx.AsyncClient(timeout=20) as client:
-            # ESPN 球隊賽季數據
             res = await client.get(
-                "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams",
-                params={"limit": 32}
+                "https://site.api.espn.com/apis/v2/sports/basketball/nba/standings",
+                params={"season": "2026"}
             )
             data = res.json()
 
-        ESPN_TO_FULL = {
-            "Atlanta Hawks":"Atlanta Hawks","Boston Celtics":"Boston Celtics",
-            "Brooklyn Nets":"Brooklyn Nets","Charlotte Hornets":"Charlotte Hornets",
-            "Chicago Bulls":"Chicago Bulls","Cleveland Cavaliers":"Cleveland Cavaliers",
-            "Dallas Mavericks":"Dallas Mavericks","Denver Nuggets":"Denver Nuggets",
-            "Detroit Pistons":"Detroit Pistons","Golden State Warriors":"Golden State Warriors",
-            "Houston Rockets":"Houston Rockets","Indiana Pacers":"Indiana Pacers",
-            "LA Clippers":"Los Angeles Clippers","Los Angeles Lakers":"Los Angeles Lakers",
-            "Memphis Grizzlies":"Memphis Grizzlies","Miami Heat":"Miami Heat",
-            "Milwaukee Bucks":"Milwaukee Bucks","Minnesota Timberwolves":"Minnesota Timberwolves",
-            "New Orleans Pelicans":"New Orleans Pelicans","New York Knicks":"New York Knicks",
-            "Oklahoma City Thunder":"Oklahoma City Thunder","Orlando Magic":"Orlando Magic",
-            "Philadelphia 76ers":"Philadelphia 76ers","Phoenix Suns":"Phoenix Suns",
-            "Portland Trail Blazers":"Portland Trail Blazers","Sacramento Kings":"Sacramento Kings",
-            "San Antonio Spurs":"San Antonio Spurs","Toronto Raptors":"Toronto Raptors",
-            "Utah Jazz":"Utah Jazz","Washington Wizards":"Washington Wizards",
-        }
-
         stats = {}
-        teams = data.get("sports",[{}])[0].get("leagues",[{}])[0].get("teams",[])
-        for t in teams:
-            team = t.get("team",{})
-            name = team.get("displayName","")
-            full_name = ESPN_TO_FULL.get(name, name)
-            record = team.get("record",{}).get("items",[])
-            wins = losses = 0
-            for r in record:
-                if r.get("type") == "total":
-                    for stat in r.get("stats",[]):
-                        if stat.get("name") == "wins": wins = int(stat.get("value",0))
-                        if stat.get("name") == "losses": losses = int(stat.get("value",0))
-            stats[full_name] = {"wins": wins, "losses": losses, "win_pct": round(wins/(wins+losses)*100) if wins+losses>0 else 50}
+        children = data.get("children", [])
+        for conf in children:
+            for entry in conf.get("standings", {}).get("entries", []):
+                team_name = entry.get("team", {}).get("displayName", "")
+                wins = losses = 0
+                for stat in entry.get("stats", []):
+                    if stat.get("name") == "wins": wins = int(stat.get("value", 0))
+                    if stat.get("name") == "losses": losses = int(stat.get("value", 0))
+                    if stat.get("name") == "pointsFor":
+                        pts = round(float(stat.get("value", 110)), 1)
+                        if team_name in TEAM_DATA:
+                            TEAM_DATA[team_name]["pts"] = pts
+                    if stat.get("name") == "pointsAgainst":
+                        opp = round(float(stat.get("value", 110)), 1)
+                        if team_name in TEAM_DATA:
+                            TEAM_DATA[team_name]["opp"] = opp
 
-        # 更新 TEAM_DATA 的 ELO（用勝率重新校準）
-        for team_name, s in stats.items():
-            if team_name in TEAM_DATA:
-                # 用勝率動態調整 ELO（基準 1500，勝率每差1%調整10分）
-                base_elo = 1500
-                win_pct = s["win_pct"]
-                new_elo = base_elo + (win_pct - 50) * 10
-                TEAM_DATA[team_name]["elo"] = round(new_elo)
-                updated += 1
+                if team_name in TEAM_DATA and wins + losses > 0:
+                    win_pct = wins / (wins + losses)
+                    # ELO 根據勝率動態校準（基準 1500）
+                    new_elo = round(1500 + (win_pct - 0.5) * 800)
+                    TEAM_DATA[team_name]["elo"] = new_elo
+                    stats[team_name] = {"wins": wins, "losses": losses, "win_pct": round(win_pct*100, 1), "elo": new_elo}
+                    updated += 1
 
-        print(f"✅ ESPN Stats 更新 {updated} 支球隊 ELO")
+        print(f"✅ ESPN Standings 更新 {updated} 支球隊")
         return {"status": "ok", "updated": updated, "stats": stats}
     except Exception as e:
         return {"status": "error", "message": str(e)}
