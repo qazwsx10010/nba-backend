@@ -465,8 +465,45 @@ async def get_nba_stats(): return await fetch_nba_stats()
 @app.get("/api/polymarket")
 async def get_polymarket(): return await fetch_polymarket_odds()
 
-@app.get("/api/polymarket/debug")
-async def debug_polymarket():
+@app.get("/api/polymarket/debug2")
+async def debug_polymarket2():
+    """除錯：直接看 events 的 market outcomes 格式"""
+    try:
+        import json as _json
+        async with httpx.AsyncClient(timeout=20) as client:
+            res = await client.get(
+                "https://gamma-api.polymarket.com/events",
+                params={"active":"true","closed":"false","limit":"5","order":"volume24hr","ascending":"false"},
+                headers={"User-Agent":"Mozilla/5.0"}
+            )
+            data = res.json()
+        events = data if isinstance(data, list) else data.get("events", [])
+        result = []
+        for ev in events[:3]:
+            markets_info = []
+            for m in ev.get("markets", [])[:2]:
+                outcomes_raw = m.get("outcomes","[]")
+                prices_raw = m.get("outcomePrices","[]")
+                try: outcomes = _json.loads(outcomes_raw) if isinstance(outcomes_raw,str) else outcomes_raw
+                except: outcomes = outcomes_raw
+                try: prices = _json.loads(prices_raw) if isinstance(prices_raw,str) else prices_raw
+                except: prices = prices_raw
+                markets_info.append({
+                    "question": m.get("question",""),
+                    "outcomes": outcomes,
+                    "prices": prices,
+                    "volume24hr": m.get("volume24hr"),
+                    "volume": m.get("volume"),
+                })
+            result.append({
+                "title": ev.get("title",""),
+                "volume24hr": ev.get("volume24hr"),
+                "markets_count": len(ev.get("markets",[])),
+                "markets_sample": markets_info
+            })
+        return {"events": result}
+    except Exception as e:
+        return {"error": str(e)}
     """除錯用：找正確的 NBA tag ID"""
     try:
         async with httpx.AsyncClient(timeout=15) as client:
