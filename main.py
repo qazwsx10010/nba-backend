@@ -505,6 +505,15 @@ async def get_injuries(): return await fetch_espn_injuries()
 @app.get("/api/b2b")
 async def get_b2b(): return await fetch_b2b_status()
 
+@app.get("/api/nba-stats/debug")
+async def debug_nba_stats():
+    async with httpx.AsyncClient(timeout=20) as client:
+        res = await client.get("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams?limit=2")
+        data = res.json()
+    # 只回傳第一支球隊的完整結構
+    teams = data.get("sports",[{}])[0].get("leagues",[{}])[0].get("teams",[])
+    return teams[0] if teams else {"error":"no teams"}
+
 @app.get("/api/nba-stats")
 async def get_nba_stats(): return await fetch_nba_stats()
 
