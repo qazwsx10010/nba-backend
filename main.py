@@ -472,12 +472,33 @@ async def update_results():
             hName=home["team"]["displayName"]; aName=away["team"]["displayName"]
             hScore=int(home.get("score",0)); aScore=int(away.get("score",0))
             winner=hName if hScore>aScore else aName
-            row=await conn.fetchrow("SELECT id,predicted_winner FROM predictions WHERE game_date=$1 AND home_team=$2 AND away_team=$3",yesterday,hName,aName)
+            row=await conn.fetchrow(
+                "SELECT id,predicted_winner,bet_type,spread_line FROM predictions WHERE game_date=$1 AND home_team=$2 AND away_team=$3",
+                yesterday,hName,aName)
             if row:
-                await conn.execute("UPDATE predictions SET actual_winner=$1,actual_home_score=$2,actual_away_score=$3,result=$4 WHERE id=$5",
-                    winner,hScore,aScore,row["predicted_winner"]==winner,row["id"])
+                bet_type=row["bet_type"] or ""
+                spread_line=row["spread_line"]
+                predicted=row["predicted_winner"]
+
+                # 根據下注方式判斷結果
+                if "讓分" in bet_type and spread_line is not None:
+                    # 讓分：主場隊伍讓分，主場分數 + 讓分值 > 客場分數才算贏
+                    # spread_line 是負數（主場讓分），例如 -16.5
+                    result = (hScore + spread_line) > aScore
+                elif "吃分" in bet_type and spread_line is not None:
+                    # 吃分：客場吃分，客場分數 - 讓分值 > 主場分數才算贏
+                    # spread_line 是負數，吃分就是客場加回去
+                    result = (aScore - spread_line) > hScore
+                else:
+                    # 不讓分：直接比較誰贏
+                    result = predicted == winner
+
+                await conn.execute(
+                    "UPDATE predictions SET actual_winner=$1,actual_home_score=$2,actual_away_score=$3,result=$4 WHERE id=$5",
+                    winner,hScore,aScore,result,row["id"])
                 updated+=1
         await conn.close()
+        print(f"✅ 更新 {updated} 場結果")
         return {"status":"ok","updated":updated}
     except Exception as e:
         return {"status":"error","message":str(e)}
