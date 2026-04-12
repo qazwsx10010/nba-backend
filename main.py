@@ -235,10 +235,14 @@ async def fetch_nba_stats():
                         try: losses = int(v)
                         except: pass
                     if n == "avgPointsFor":
-                        try: pts = round(float(v), 1)
+                        try:
+                            val = round(float(v), 1)
+                            if val > 80: pts = val  # 合理場均得分
                         except: pass
                     if n == "avgPointsAgainst":
-                        try: opp = round(float(v), 1)
+                        try:
+                            val = round(float(v), 1)
+                            if val > 80: opp = val  # 合理場均失分
                         except: pass
                     if n == "Last Ten Games":
                         recent_str = sdv
@@ -261,11 +265,11 @@ async def fetch_nba_stats():
                     new_elo = new_elo + recent_adj_raw
                     TEAM_DATA[team_name]["recent_adj"] = recent_adj_raw
                     TEAM_DATA[team_name]["elo"] = new_elo
-                    # pointsFor/Against 是全季總分，需除以場次數得到場均
+                    # pointsFor/Against 是全季總分，需除以場次
                     if pts and pts > 80:
-                        TEAM_DATA[team_name]["pts"] = round(pts / games, 1)
+                        TEAM_DATA[team_name]["pts"] = pts
                     if opp and opp > 80:
-                        TEAM_DATA[team_name]["opp"] = round(opp / games, 1)
+                        TEAM_DATA[team_name]["opp"] = opp
                     # 解析主客場勝率（ESPN 欄位名稱）
                     home_w=home_l=away_w=away_l=0
                     for stat in entry.get("stats", []):
