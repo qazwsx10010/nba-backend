@@ -541,6 +541,20 @@ async def get_injuries(): return await fetch_espn_injuries()
 @app.get("/api/b2b")
 async def get_b2b(): return await fetch_b2b_status()
 
+@app.get("/api/team-data")
+async def get_team_data():
+    """回傳最新的球隊數據（ELO、得失分），供前端計算用"""
+    result = {}
+    for name, d in TEAM_DATA.items():
+        abbr = d.get("abbr","")
+        result[abbr] = {
+            "elo": d.get("elo", 1400),
+            "pts": d.get("pts", 110),
+            "opp": d.get("opp", 110),
+            "pace": d.get("pace", 99),
+        }
+    return {"status": "ok", "data": result}
+
 @app.get("/api/nba-stats/debug")
 async def debug_nba_stats():
     async with httpx.AsyncClient(timeout=20) as client:
