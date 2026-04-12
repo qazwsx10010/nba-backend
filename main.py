@@ -566,7 +566,11 @@ async def update_results():
 @app.get("/")
 async def root(): return {"status":"ok","message":"NBA 預測系統後端運作中","version":"v3.1-polymarket"}
 
-@app.get("/api/injuries")
+@app.get("/api/trigger/nba-stats")
+async def trigger_nba_stats():
+    """手動觸發 NBA Stats 更新"""
+    result = await fetch_nba_stats()
+    return result
 async def get_injuries(): return await fetch_espn_injuries()
 
 @app.get("/api/b2b")
