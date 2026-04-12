@@ -234,13 +234,13 @@ async def fetch_nba_stats():
                     if n == "losses":
                         try: losses = int(v)
                         except: pass
-                    if n == "pointsFor":
+                    if n == "avgPointsFor":
                         try: pts = round(float(v), 1)
                         except: pass
-                    if n == "pointsAgainst":
+                    if n == "avgPointsAgainst":
                         try: opp = round(float(v), 1)
                         except: pass
-                    if n == "lastTen":
+                    if n == "Last Ten Games":
                         recent_str = sdv
                         try:
                             if "-" in str(sdv):
