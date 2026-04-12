@@ -500,9 +500,17 @@ async def fetch_and_predict():
             conf=max(round(mp*100),round((1-mp)*100))
             if spLine is not None:
                 diff=ms-spLine
-                if abs(diff)<0.5: bet=hEn if mp>=0.5 else aEn; odds=h2hH if mp>=0.5 else h2hA; btype="不讓分"
-                elif diff>0: bet=hEn; odds=spHO or 1.72; btype=f"讓分 {spLine}"
-                else: bet=aEn; odds=spAO or 1.72; btype=f"吃分 +{abs(spLine)}"
+                if abs(diff)<0.5:
+                    bet=hEn if mp>=0.5 else aEn; odds=h2hH if mp>=0.5 else h2hA; btype="不讓分"
+                elif diff>0:
+                    # 主場隊伍表現優於讓分 → 下注主場
+                    bet=hEn; odds=spHO or 1.72
+                    btype=f"讓分 {spLine}" if spLine<0 else f"吃分 +{spLine}"
+                else:
+                    # 客場隊伍表現優於讓分 → 下注客場
+                    bet=aEn; odds=spAO or 1.72
+                    away_spread=-spLine  # 客場讓分是主場讓分的相反
+                    btype=f"讓分 {away_spread}" if away_spread<0 else f"吃分 +{away_spread}"
             else:
                 bet=hEn if mp>=0.5 else aEn; odds=h2hH if mp>=0.5 else h2hA; btype="不讓分"
             ev=(conf/100*odds-1)*100
