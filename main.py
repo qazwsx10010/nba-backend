@@ -585,15 +585,17 @@ async def get_b2b(): return await fetch_b2b_status()
 
 @app.get("/api/team-data")
 async def get_team_data():
-    """回傳最新的球隊數據（ELO、得失分），供前端計算用"""
+    """回傳最新的球隊數據（ELO、得失分、近期狀態、主客場勝率），供前端計算用"""
     result = {}
     for name, d in TEAM_DATA.items():
         abbr = d.get("abbr","")
+        if not abbr: continue
         result[abbr] = {
             "elo": d.get("elo", 1400),
             "pts": d.get("pts", 110),
             "opp": d.get("opp", 110),
             "pace": d.get("pace", 99),
+            "recent_adj": d.get("recent_adj", 0),  # 近期10場調整值
         }
     return {"status": "ok", "data": result}
 
