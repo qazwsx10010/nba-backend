@@ -672,4 +672,6 @@ async def startup():
     # 下午 3 點重新抓傷兵並更新預測（涵蓋晚場比賽最新傷兵）
     scheduler.add_job(fetch_and_predict,"cron",hour=15,minute=0)
     scheduler.start()
-    print("✅ 後端啟動完成")
+    # 啟動時立即更新一次 NBA Stats
+    await fetch_nba_stats()
+    print("✅ 後端啟動完成，NBA Stats 已更新")
