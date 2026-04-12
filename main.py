@@ -48,6 +48,20 @@ TEAM_DATA = {
     "Washington Wizards":{"elo":1150,"pts":105.8,"opp":121.5,"pace":101.4,"abbr":"WAS"},
 }
 
+TEAM_NAME_NORMALIZE = {
+    "LA Clippers": "Los Angeles Clippers",
+    "LA Lakers": "Los Angeles Lakers",
+    "GS Warriors": "Golden State Warriors",
+    "SA Spurs": "San Antonio Spurs",
+    "OKC Thunder": "Oklahoma City Thunder",
+    "NO Pelicans": "New Orleans Pelicans",
+    "NY Knicks": "New York Knicks",
+    "NJ Nets": "Brooklyn Nets",
+}
+
+def normalize_team(name):
+    return TEAM_NAME_NORMALIZE.get(name, name)
+
 TW_TEAM_MAP = {
     "亞特蘭大老鷹":"Atlanta Hawks","波士頓塞爾提克":"Boston Celtics",
     "布魯克林籃網":"Brooklyn Nets","夏洛特黃蜂":"Charlotte Hornets",
@@ -459,7 +473,8 @@ async def fetch_and_predict():
         conn=await get_db()
         today=date.today(); saved=0
         for game in data:
-            hEn=game["home_team"]; aEn=game["away_team"]
+            hEn=normalize_team(game["home_team"])
+            aEn=normalize_team(game["away_team"])
             h2hH=h2hA=spLine=spHO=spAO=None
             for bk in game.get("bookmakers",[]):
                 for mk in bk.get("markets",[]):
