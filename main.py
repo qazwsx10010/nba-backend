@@ -739,13 +739,18 @@ scheduler=AsyncIOScheduler(timezone=TW)
 @app.on_event("startup")
 async def startup():
     await init_db()
-    scheduler.add_job(fetch_and_predict,"cron",hour=8,minute=0)
-    scheduler.add_job(update_results,"cron",hour=2,minute=0)
-    # NBA Stats 每天早上 7 點更新（早於預測的 8 點）
-    scheduler.add_job(fetch_nba_stats,"cron",hour=7,minute=0)
-    # 下午 3 點重新抓傷兵並更新預測（涵蓋晚場比賽最新傷兵）
-    scheduler.add_job(fetch_and_predict,"cron",hour=15,minute=0)
+
+    # 付費/有限制 API
+    scheduler.add_job(fetch_and_predict,"cron",hour=8,minute=0)   # 早上8點預測
+    scheduler.add_job(fetch_and_predict,"cron",hour=15,minute=0)  # 下午3點更新預測
+    scheduler.add_job(update_results,"cron",hour=2,minute=0)      # 凌晨2點更新結果
+
+    # 免費 API → 每小時更新
+    scheduler.add_job(fetch_nba_stats,"cron",minute=0)       # 每小時整點：ELO/得失分/近期/主客場
+    scheduler.add_job(fetch_espn_injuries,"cron",minute=15)   # 每小時15分：傷兵
+    scheduler.add_job(fetch_b2b_status,"cron",minute=30)      # 每小時30分：B2B
+
     scheduler.start()
-    # 啟動時立即更新一次 NBA Stats
+    # 啟動時立即執行一次所有免費資料更新
     await fetch_nba_stats()
-    print("✅ 後端啟動完成，NBA Stats 已更新")
+    print("✅ 後端啟動完成，所有免費資料已更新")
