@@ -223,26 +223,35 @@ async def fetch_nba_stats():
                 wins = losses = 0
                 pts = opp = None
                 recent_adj_raw = 0
-                dv = ""
+                recent_str = ""
                 for stat in entry.get("stats", []):
                     n = stat.get("name","")
                     v = stat.get("value", 0)
-                    dv = stat.get("displayValue","")
-                    if n == "wins": wins = int(v)
-                    if n == "losses": losses = int(v)
-                    if n == "pointsFor": pts = round(float(v), 1)
-                    if n == "pointsAgainst": opp = round(float(v), 1)
-                    # 近期10場（格式 "6-4" 或 value=6）
+                    sdv = stat.get("displayValue","")
+                    if n == "wins":
+                        try: wins = int(v)
+                        except: pass
+                    if n == "losses":
+                        try: losses = int(v)
+                        except: pass
+                    if n == "pointsFor":
+                        try: pts = round(float(v), 1)
+                        except: pass
+                    if n == "pointsAgainst":
+                        try: opp = round(float(v), 1)
+                        except: pass
                     if n == "lastTen":
+                        recent_str = sdv
                         try:
-                            if "-" in str(dv):
-                                p = dv.split("-")
-                                rw,rl = int(p[0]),int(p[1])
+                            if "-" in str(sdv):
+                                p = sdv.split("-")
+                                rw, rl = int(p[0]), int(p[1])
                             else:
-                                rw = int(float(v)); rl = 10-rw
-                            recent_pct_raw = rw/(rw+rl)
-                            recent_adj_raw = round((recent_pct_raw-0.5)*100)
-                        except: recent_adj_raw=0; rw=0; rl=0; dv=""
+                                rw = int(float(v)); rl = 10 - rw
+                            if rw + rl > 0:
+                                recent_adj_raw = round((rw/(rw+rl) - 0.5) * 100)
+                        except:
+                            recent_adj_raw = 0
 
                 if team_name in TEAM_DATA and wins + losses > 0:
                     games = wins + losses
@@ -295,7 +304,7 @@ async def fetch_nba_stats():
                         "home_win_pct": home_win_pct,
                         "away_win_pct": away_win_pct,
                         "recent_adj": recent_adj_raw,
-                        "recent": dv if dv else ""
+                        "recent": recent_str
                     }
                     updated += 1
                     recent_adj_raw = 0  # 重置避免污染下一筆
