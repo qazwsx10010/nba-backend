@@ -222,6 +222,8 @@ async def fetch_nba_stats():
                     team_name = "Los Angeles Clippers"
                 wins = losses = 0
                 pts = opp = None
+                recent_adj_raw = 0
+                dv = ""
                 for stat in entry.get("stats", []):
                     n = stat.get("name","")
                     v = stat.get("value", 0)
@@ -246,13 +248,9 @@ async def fetch_nba_stats():
                     games = wins + losses
                     win_pct = wins / games
                     new_elo = round(1500 + (win_pct - 0.5) * 800)
-                    # 加入近期10場調整
-                    if 'recent_adj_raw' in dir() and recent_adj_raw != 0:
-                        new_elo = new_elo + recent_adj_raw
-                        TEAM_DATA[team_name]["recent_adj"] = recent_adj_raw
-                    else:
-                        recent_adj_raw = 0
-                        TEAM_DATA[team_name]["recent_adj"] = 0
+                    # 加入近期10場調整（±50分）
+                    new_elo = new_elo + recent_adj_raw
+                    TEAM_DATA[team_name]["recent_adj"] = recent_adj_raw
                     TEAM_DATA[team_name]["elo"] = new_elo
                     # pointsFor/Against 是全季總分，需除以場次數得到場均
                     if pts and pts > 80:
