@@ -580,6 +580,30 @@ async def trigger_nba_stats():
     """手動觸發 NBA Stats 更新"""
     result = await fetch_nba_stats()
     return result
+
+@app.get("/api/trigger/debug-stats")
+async def debug_stats():
+    """查看 ESPN standings 的真實 stat 欄位名稱"""
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            res = await client.get(
+                "https://site.api.espn.com/apis/v2/sports/basketball/nba/standings",
+                params={"season": "2026"}
+            )
+            data = res.json()
+        children = data.get("children", [])
+        # 只取第一隊的所有 stat 名稱
+        for conf in children:
+            entries = conf.get("standings", {}).get("entries", [])
+            if entries:
+                entry = entries[0]
+                team = entry.get("team", {}).get("displayName", "")
+                stats = entry.get("stats", [])
+                stat_names = [{"name": s.get("name"), "displayName": s.get("displayName"), "value": s.get("value"), "displayValue": s.get("displayValue")} for s in stats]
+                return {"team": team, "stat_count": len(stats), "stats": stat_names}
+        return {"error": "no entries"}
+    except Exception as e:
+        return {"error": str(e)}
 async def get_injuries(): return await fetch_espn_injuries()
 
 @app.get("/api/b2b")
