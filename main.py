@@ -913,38 +913,32 @@ async def get_mlb_team_data():
 
 @app.get("/api/mlb/polymarket/debug")
 async def debug_mlb_polymarket():
-    """除錯：直接看 MLB Polymarket events 的原始資料"""
+    """除錯：搜尋今日 MLB 單場比賽"""
     try:
         import json as _json
+        results = []
+        # 試不同搜尋方式
+        searches = [
+            {"active":"true","closed":"false","limit":"20","tag_slug":"mlb","order":"volume24hr","ascending":"false"},
+            {"active":"true","closed":"false","limit":"20","q":"MLB","order":"volume24hr","ascending":"false"},
+            {"active":"true","closed":"false","limit":"20","q":"Astros","order":"volume24hr","ascending":"false"},
+        ]
         async with httpx.AsyncClient(timeout=20) as client:
-            res = await client.get(
-                "https://gamma-api.polymarket.com/events",
-                params={"active":"true","closed":"false","limit":"10","tag_slug":"baseball","order":"volume","ascending":"false"},
-                headers={"User-Agent":"Mozilla/5.0"}
-            )
-            data = res.json()
-        events = data if isinstance(data, list) else data.get("events", [])
-        result = []
-        for ev in events[:5]:
-            markets_sample = []
-            for m in ev.get("markets", [])[:3]:
-                markets_sample.append({
-                    "question": m.get("question",""),
-                    "volume": m.get("volume"),
-                    "volumeNum": m.get("volumeNum"),
-                    "volume24hr": m.get("volume24hr"),
-                    "outcomePrices": m.get("outcomePrices"),
-                    "outcomes": m.get("outcomes"),
+            for params in searches:
+                res = await client.get(
+                    "https://gamma-api.polymarket.com/events",
+                    params=params,
+                    headers={"User-Agent":"Mozilla/5.0"}
+                )
+                data = res.json()
+                events = data if isinstance(data, list) else data.get("events", [])
+                results.append({
+                    "params": params,
+                    "count": len(events),
+                    "titles": [ev.get("title","") for ev in events[:5]],
+                    "tags": [ev.get("tags",[]) for ev in events[:3]],
                 })
-            result.append({
-                "title": ev.get("title",""),
-                "volume": ev.get("volume"),
-                "volumeNum": ev.get("volumeNum"),
-                "volume24hr": ev.get("volume24hr"),
-                "markets_count": len(ev.get("markets",[])),
-                "markets_sample": markets_sample,
-            })
-        return {"events": result}
+        return {"searches": results}
     except Exception as e:
         return {"error": str(e)}
 
