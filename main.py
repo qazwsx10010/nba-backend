@@ -760,152 +760,62 @@ async def trigger_nba_stats_post(): return await fetch_nba_stats()
 # Polymarket MLB 勝率（解決 CORS，從後端抓）
 # ══════════════════════════════════════════════════════
 async def fetch_polymarket_mlb_odds():
-    """從後端抓 Polymarket MLB 今日單場勝負賭盤"""
+    """Polymarket MLB 單場比賽勝負賠率"""
+    import json as _json
     try:
-        import json as _json
         async with httpx.AsyncClient(timeout=20) as client:
             res = await client.get(
                 "https://gamma-api.polymarket.com/events",
-                params={
-                    "active": "true",
-                    "closed": "false",
-                    "limit": "50",
-                    "tag_slug": "mlb",
-                    "order": "volume24hr",
-                    "ascending": "false",
-                },
-                headers={"User-Agent": "Mozilla/5.0"}
+                params={"active":"true","closed":"false","limit":"50","tag_slug":"mlb","order":"volume24hr","ascending":"false"},
+                headers={"User-Agent":"Mozilla/5.0"}
             )
             data = res.json()
 
         events = data if isinstance(data, list) else data.get("events", [])
         result = {}
 
-        mlb_teams = {
-            "Astros","Mariners","Dodgers","Yankees","Braves","Phillies","Mets","Padres",
-            "Orioles","Brewers","Twins","Giants","Cardinals","Rangers","Guardians","Rays",
-            "Diamondbacks","Tigers","Cubs","Royals","Angels","Reds","Pirates","Marlins",
-            "Athletics","Rockies","White Sox","Nationals","Red Sox","Blue Jays"
-        }
-
         for event in events:
-            event_title = event.get("title", "")
-            # 今日單場比賽的標題格式是 "TeamA vs. TeamB"
-            if "vs." not in event_title:
+            title = event.get("title", "")
+            # 只處理今日單場：title 格式是 "Team A vs. Team B"
+            if "vs." not in title:
                 continue
 
-            # 確認是兩支 MLB 球隊
-            found_teams = [t for t in mlb_teams if t in event_title]
-            if len(found_teams) < 2:
-                continue
-
-            # 找主盤：question 完全等於 event title（最精確的方法）
+            # 在 markets 裡找 question 完全等於 title 的那一筆（主勝負盤）
             for m in event.get("markets", []):
-                question = m.get("question", "")
-                # 主盤的 question 就是 event title，例如 "Houston Astros vs. Seattle Mariners"
-                if question != event_title:
+                if m.get("question", "") != title:
                     continue
 
-                outcomes_raw = m.get("outcomes", "[]")
-                prices_raw = m.get("outcomePrices", "[]")
-
-                if isinstance(outcomes_raw, str):
-                    try: outcomes = _json.loads(outcomes_raw)
-                    except: continue
-                else: outcomes = outcomes_raw
-
-                if isinstance(prices_raw, str):
-                    try: prices = _json.loads(prices_raw)
-                    except: continue
-                else: prices = prices_raw
+                # 解析 outcomes 和 prices
+                try:
+                    outcomes = _json.loads(m["outcomes"]) if isinstance(m["outcomes"], str) else m["outcomes"]
+                    prices  = _json.loads(m["outcomePrices"]) if isinstance(m["outcomePrices"], str) else m["outcomePrices"]
+                except:
+                    break
 
                 if len(outcomes) != 2 or len(prices) != 2:
-                    continue
+                    break
 
                 try:
                     p1, p2 = float(prices[0]), float(prices[1])
-                except: continue
-                if not (0 < p1 < 1 and 0 < p2 < 1): continue
+                except:
+                    break
 
-                # market volumeNum = 正確金額
-                vol = float(m.get("volumeNum", 0) or m.get("volume", 0) or 0)
-                # 找對應完整隊名
-                MLB_FULL = {
-                    "Astros":"Houston Astros","Mariners":"Seattle Mariners",
-                    "Dodgers":"Los Angeles Dodgers","Yankees":"New York Yankees",
-                    "Braves":"Atlanta Braves","Phillies":"Philadelphia Phillies",
-                    "Mets":"New York Mets","Padres":"San Diego Padres",
-                    "Orioles":"Baltimore Orioles","Brewers":"Milwaukee Brewers",
-                    "Twins":"Minnesota Twins","Giants":"San Francisco Giants",
-                    "Cardinals":"St. Louis Cardinals","Rangers":"Texas Rangers",
-                    "Guardians":"Cleveland Guardians","Rays":"Tampa Bay Rays",
-                    "Diamondbacks":"Arizona Diamondbacks","Tigers":"Detroit Tigers",
-                    "Cubs":"Chicago Cubs","Royals":"Kansas City Royals",
-                    "Angels":"Los Angeles Angels","Reds":"Cincinnati Reds",
-                    "Pirates":"Pittsburgh Pirates","Marlins":"Miami Marlins",
-                    "Athletics":"Athletics","Rockies":"Colorado Rockies",
-                    "White Sox":"Chicago White Sox","Nationals":"Washington Nationals",
-                    "Red Sox":"Boston Red Sox","Blue Jays":"Toronto Blue Jays",
-                }
-                full1 = next((v for k,v in MLB_FULL.items() if k in t1), t1)
-                full2 = next((v for k,v in MLB_FULL.items() if k in t2), t2)
-                result[full1] = {"prob": p1, "probPct": round(p1*100,1), "volume": round(vol), "reliable": vol>=3000}
-                result[full2] = {"prob": p2, "probPct": round(p2*100,1), "volume": round(vol), "reliable": vol>=3000}
-                break
+                if not (0 < p1 < 1 and 0 < p2 < 1):
+                    break
 
-        return {
-            "status": "ok",
-            "odds": result,
-            "markets": len(result)//2,
-        }
+                # volumeNum 就是這個 market 的總交易量（美元）
+                vol = float(m.get("volumeNum") or m.get("volume") or 0)
+                t1  = str(outcomes[0]).strip()
+                t2  = str(outcomes[1]).strip()
+
+                result[t1] = {"prob": p1, "probPct": round(p1*100, 1), "volume": round(vol), "reliable": vol >= 3000}
+                result[t2] = {"prob": p2, "probPct": round(p2*100, 1), "volume": round(vol), "reliable": vol >= 3000}
+                break  # 找到主盤就停
+
+        return {"status": "ok", "odds": result, "markets": len(result) // 2}
+
     except Exception as e:
         return {"status": "error", "message": str(e), "odds": {}}
-
-@app.get("/api/mlb/stats")
-async def get_mlb_stats():
-    if not DB_URL: return {"today":{"rate":0,"wins":0,"total":0},"week":{"rate":0,"wins":0,"total":0},"month":{"rate":0,"wins":0,"total":0},"high_conf":{"rate":0,"wins":0,"total":0}}
-    conn=await get_db()
-    def wr(r):
-        if not r or not r["total"]: return {"rate":0,"wins":0,"total":0}
-        return {"rate":round((r["wins"] or 0)/r["total"]*100),"wins":int(r["wins"] or 0),"total":r["total"]}
-    td=await conn.fetchrow("SELECT COUNT(*) as total,SUM(CASE WHEN result THEN 1 ELSE 0 END) as wins FROM mlb_predictions WHERE game_date=CURRENT_DATE AND result IS NOT NULL")
-    wk=await conn.fetchrow("SELECT COUNT(*) as total,SUM(CASE WHEN result THEN 1 ELSE 0 END) as wins FROM mlb_predictions WHERE game_date>=CURRENT_DATE-interval '7 days' AND result IS NOT NULL")
-    mn=await conn.fetchrow("SELECT COUNT(*) as total,SUM(CASE WHEN result THEN 1 ELSE 0 END) as wins FROM mlb_predictions WHERE game_date>=CURRENT_DATE-interval '30 days' AND result IS NOT NULL")
-    hc=await conn.fetchrow("SELECT COUNT(*) as total,SUM(CASE WHEN result THEN 1 ELSE 0 END) as wins FROM mlb_predictions WHERE confidence>=70 AND result IS NOT NULL")
-    await conn.close()
-    return {"today":wr(td),"week":wr(wk),"month":wr(mn),"high_conf":wr(hc)}
-
-@app.get("/api/mlb/predictions/history")
-async def get_mlb_history(days:int=60):
-    if not DB_URL: return []
-    conn=await get_db()
-    try:
-        rows=await conn.fetch("SELECT * FROM mlb_predictions WHERE result IS NOT NULL AND game_date>=CURRENT_DATE-($1*INTERVAL '1 day') ORDER BY game_date DESC,confidence DESC",days)
-        await conn.close(); return [dict(r) for r in rows]
-    except Exception as e:
-        await conn.close(); return []
-
-@app.get("/api/mlb/predictions/today")
-async def get_mlb_today():
-    if not DB_URL: return []
-    conn=await get_db()
-    rows=await conn.fetch("SELECT * FROM mlb_predictions WHERE game_date=$1 ORDER BY confidence DESC",date.today())
-    await conn.close(); return [dict(r) for r in rows]
-
-@app.get("/api/mlb/starters")
-async def get_mlb_starters(): return await fetch_mlb_starters()
-
-@app.get("/api/mlb/polymarket")
-async def get_mlb_polymarket(): return await fetch_polymarket_mlb_odds()
-
-@app.get("/api/mlb/team-data")
-async def get_mlb_team_data():
-    result = {}
-    for name, d in MLB_TEAM_DATA.items():
-        abbr = d.get("abbr","")
-        if not abbr: continue
-        result[abbr] = {"elo":d.get("elo",1500),"era":d.get("era",4.5),"fip":d.get("fip",4.6),"woba":d.get("woba",0.300),"home_adj":d.get("home_adj",0.04),"recent_adj":d.get("recent_adj",0)}
-    return {"status":"ok","data":result}
 
 
 @app.get("/api/mlb/polymarket/debug")
