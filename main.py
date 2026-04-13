@@ -755,6 +755,114 @@ async def trigger_nba_stats_post(): return await fetch_nba_stats()
 # ══════════════════════════════════════════════════════
 # API 路由 - MLB（新增，全部以 /api/mlb/ 開頭）
 # ══════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════
+# Polymarket MLB 勝率（解決 CORS，從後端抓）
+# ══════════════════════════════════════════════════════
+async def fetch_polymarket_mlb_odds():
+    """從後端抓 Polymarket MLB 今日單場勝負賭盤"""
+    try:
+        import json as _json
+        async with httpx.AsyncClient(timeout=20) as client:
+            res = await client.get(
+                "https://gamma-api.polymarket.com/events",
+                params={
+                    "active": "true",
+                    "closed": "false",
+                    "limit": "80",
+                    "tag_slug": "baseball",
+                    "order": "volume24hr",
+                    "ascending": "false",
+                },
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
+            data = res.json()
+
+        events = data if isinstance(data, list) else data.get("events", [])
+        result = {}
+
+        mlb_teams = {
+            "Astros","Mariners","Dodgers","Yankees","Braves","Phillies","Mets","Padres",
+            "Orioles","Brewers","Twins","Giants","Cardinals","Rangers","Guardians","Rays",
+            "Diamondbacks","Tigers","Cubs","Royals","Angels","Reds","Pirates","Marlins",
+            "Athletics","Rockies","White Sox","Nationals","Red Sox","Blue Jays"
+        }
+
+        for event in events:
+            event_volume = float(event.get("volume24hr", 0) or event.get("volume", 0) or 0)
+            event_title = event.get("title", "")
+            found_teams = [t for t in mlb_teams if t in event_title]
+            if len(found_teams) < 2:
+                continue
+
+            for m in event.get("markets", []):
+                question = m.get("question", "")
+                if "vs." not in question and " vs " not in question:
+                    continue
+                if any(x in question.lower() for x in ["spread","total","runs","innings","strikeout","home run"]):
+                    continue
+
+                outcomes_raw = m.get("outcomes", "[]")
+                prices_raw = m.get("outcomePrices", "[]")
+
+                if isinstance(outcomes_raw, str):
+                    try: outcomes = _json.loads(outcomes_raw)
+                    except: continue
+                else: outcomes = outcomes_raw
+
+                if isinstance(prices_raw, str):
+                    try: prices = _json.loads(prices_raw)
+                    except: continue
+                else: prices = prices_raw
+
+                if len(outcomes) != 2 or len(prices) != 2:
+                    continue
+
+                t1, t2 = str(outcomes[0]).strip(), str(outcomes[1]).strip()
+                # 確認是 MLB 球隊
+                t1_mlb = any(team in t1 for team in mlb_teams)
+                t2_mlb = any(team in t2 for team in mlb_teams)
+                if not t1_mlb or not t2_mlb:
+                    continue
+
+                try:
+                    p1, p2 = float(prices[0]), float(prices[1])
+                except: continue
+                if not (0 < p1 < 1 and 0 < p2 < 1): continue
+
+                vol = event_volume
+                # 找對應完整隊名
+                MLB_FULL = {
+                    "Astros":"Houston Astros","Mariners":"Seattle Mariners",
+                    "Dodgers":"Los Angeles Dodgers","Yankees":"New York Yankees",
+                    "Braves":"Atlanta Braves","Phillies":"Philadelphia Phillies",
+                    "Mets":"New York Mets","Padres":"San Diego Padres",
+                    "Orioles":"Baltimore Orioles","Brewers":"Milwaukee Brewers",
+                    "Twins":"Minnesota Twins","Giants":"San Francisco Giants",
+                    "Cardinals":"St. Louis Cardinals","Rangers":"Texas Rangers",
+                    "Guardians":"Cleveland Guardians","Rays":"Tampa Bay Rays",
+                    "Diamondbacks":"Arizona Diamondbacks","Tigers":"Detroit Tigers",
+                    "Cubs":"Chicago Cubs","Royals":"Kansas City Royals",
+                    "Angels":"Los Angeles Angels","Reds":"Cincinnati Reds",
+                    "Pirates":"Pittsburgh Pirates","Marlins":"Miami Marlins",
+                    "Athletics":"Athletics","Rockies":"Colorado Rockies",
+                    "White Sox":"Chicago White Sox","Nationals":"Washington Nationals",
+                    "Red Sox":"Boston Red Sox","Blue Jays":"Toronto Blue Jays",
+                }
+                full1 = next((v for k,v in MLB_FULL.items() if k in t1), t1)
+                full2 = next((v for k,v in MLB_FULL.items() if k in t2), t2)
+                result[full1] = {"prob": p1, "probPct": round(p1*100,1), "volume": round(vol), "reliable": vol>=3000}
+                result[full2] = {"prob": p2, "probPct": round(p2*100,1), "volume": round(vol), "reliable": vol>=3000}
+                break
+
+        return {
+            "status": "ok",
+            "odds": result,
+            "markets": len(result)//2,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "odds": {}}
+
 @app.get("/api/mlb/stats")
 async def get_mlb_stats():
     if not DB_URL: return {"today":{"rate":0,"wins":0,"total":0},"week":{"rate":0,"wins":0,"total":0},"month":{"rate":0,"wins":0,"total":0},"high_conf":{"rate":0,"wins":0,"total":0}}
@@ -788,6 +896,9 @@ async def get_mlb_today():
 
 @app.get("/api/mlb/starters")
 async def get_mlb_starters(): return await fetch_mlb_starters()
+
+@app.get("/api/mlb/polymarket")
+async def get_mlb_polymarket(): return await fetch_polymarket_mlb_odds()
 
 @app.get("/api/mlb/team-data")
 async def get_mlb_team_data():
