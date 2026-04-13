@@ -789,8 +789,6 @@ async def fetch_polymarket_mlb_odds():
         }
 
         for event in events:
-            # 優先用總交易量，其次用 24hr 交易量
-            event_volume = float(event.get("volume", 0) or event.get("volume24hr", 0) or 0)
             event_title = event.get("title", "")
             found_teams = [t for t in mlb_teams if t in event_title]
             if len(found_teams) < 2:
@@ -820,7 +818,6 @@ async def fetch_polymarket_mlb_odds():
                     continue
 
                 t1, t2 = str(outcomes[0]).strip(), str(outcomes[1]).strip()
-                # 確認是 MLB 球隊
                 t1_mlb = any(team in t1 for team in mlb_teams)
                 t2_mlb = any(team in t2 for team in mlb_teams)
                 if not t1_mlb or not t2_mlb:
@@ -831,7 +828,10 @@ async def fetch_polymarket_mlb_odds():
                 except: continue
                 if not (0 < p1 < 1 and 0 < p2 < 1): continue
 
-                vol = event_volume
+                # 交易量：優先用 market 層級，再用 event 層級
+                m_vol = float(m.get("volume", 0) or m.get("volumeNum", 0) or 0)
+                e_vol = float(event.get("volume", 0) or event.get("volume24hr", 0) or 0)
+                vol = max(m_vol, e_vol)
                 # 找對應完整隊名
                 MLB_FULL = {
                     "Astros":"Houston Astros","Mariners":"Seattle Mariners",
