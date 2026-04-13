@@ -799,14 +799,11 @@ async def fetch_polymarket_mlb_odds():
             if len(found_teams) < 2:
                 continue
 
-            # 找 moneyline market
-            # market question 格式：「Team A vs. Team B」（直接隊名對決）
+            # 找主盤：question 完全等於 event title（最精確的方法）
             for m in event.get("markets", []):
                 question = m.get("question", "")
-                # 只要格式是「隊名 vs. 隊名」的主盤，排除其他特殊盤
-                if "vs." not in question:
-                    continue
-                if any(x in question.lower() for x in ["will there","spread","o/u","over","under","inning","strikeout","home run","score","win the"]):
+                # 主盤的 question 就是 event title，例如 "Houston Astros vs. Seattle Mariners"
+                if question != event_title:
                     continue
 
                 outcomes_raw = m.get("outcomes", "[]")
@@ -825,18 +822,12 @@ async def fetch_polymarket_mlb_odds():
                 if len(outcomes) != 2 or len(prices) != 2:
                     continue
 
-                t1, t2 = str(outcomes[0]).strip(), str(outcomes[1]).strip()
-                t1_mlb = any(team in t1 for team in mlb_teams)
-                t2_mlb = any(team in t2 for team in mlb_teams)
-                if not t1_mlb or not t2_mlb:
-                    continue
-
                 try:
                     p1, p2 = float(prices[0]), float(prices[1])
                 except: continue
                 if not (0 < p1 < 1 and 0 < p2 < 1): continue
 
-                # market 的 volumeNum 才是正確金額（例如 Astros market = $37,546）
+                # market volumeNum = 正確金額
                 vol = float(m.get("volumeNum", 0) or m.get("volume", 0) or 0)
                 # 找對應完整隊名
                 MLB_FULL = {
