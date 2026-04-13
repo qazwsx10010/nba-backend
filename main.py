@@ -910,6 +910,44 @@ async def get_mlb_team_data():
         result[abbr] = {"elo":d.get("elo",1500),"era":d.get("era",4.5),"fip":d.get("fip",4.6),"woba":d.get("woba",0.300),"home_adj":d.get("home_adj",0.04),"recent_adj":d.get("recent_adj",0)}
     return {"status":"ok","data":result}
 
+
+@app.get("/api/mlb/polymarket/debug")
+async def debug_mlb_polymarket():
+    """除錯：直接看 MLB Polymarket events 的原始資料"""
+    try:
+        import json as _json
+        async with httpx.AsyncClient(timeout=20) as client:
+            res = await client.get(
+                "https://gamma-api.polymarket.com/events",
+                params={"active":"true","closed":"false","limit":"10","tag_slug":"baseball","order":"volume","ascending":"false"},
+                headers={"User-Agent":"Mozilla/5.0"}
+            )
+            data = res.json()
+        events = data if isinstance(data, list) else data.get("events", [])
+        result = []
+        for ev in events[:5]:
+            markets_sample = []
+            for m in ev.get("markets", [])[:3]:
+                markets_sample.append({
+                    "question": m.get("question",""),
+                    "volume": m.get("volume"),
+                    "volumeNum": m.get("volumeNum"),
+                    "volume24hr": m.get("volume24hr"),
+                    "outcomePrices": m.get("outcomePrices"),
+                    "outcomes": m.get("outcomes"),
+                })
+            result.append({
+                "title": ev.get("title",""),
+                "volume": ev.get("volume"),
+                "volumeNum": ev.get("volumeNum"),
+                "volume24hr": ev.get("volume24hr"),
+                "markets_count": len(ev.get("markets",[])),
+                "markets_sample": markets_sample,
+            })
+        return {"events": result}
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.post("/api/mlb/trigger/predict")
 async def trigger_mlb_predict(): return await fetch_and_predict_mlb() or {"status":"ok"}
 
