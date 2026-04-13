@@ -771,7 +771,7 @@ async def fetch_polymarket_mlb_odds():
                     "closed": "false",
                     "limit": "80",
                     "tag_slug": "baseball",
-                    "order": "volume24hr",
+                    "order": "volume",
                     "ascending": "false",
                 },
                 headers={"User-Agent": "Mozilla/5.0"}
@@ -789,7 +789,8 @@ async def fetch_polymarket_mlb_odds():
         }
 
         for event in events:
-            event_volume = float(event.get("volume24hr", 0) or event.get("volume", 0) or 0)
+            # 優先用總交易量，其次用 24hr 交易量
+            event_volume = float(event.get("volume", 0) or event.get("volume24hr", 0) or 0)
             event_title = event.get("title", "")
             found_teams = [t for t in mlb_teams if t in event_title]
             if len(found_teams) < 2:
