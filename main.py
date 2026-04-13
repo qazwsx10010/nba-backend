@@ -799,15 +799,14 @@ async def fetch_polymarket_mlb_odds():
             if len(found_teams) < 2:
                 continue
 
-            # 直接用 event 層級的 volume24hr（今日單場就在這裡）
-            e_vol = float(event.get("volume24hr", 0) or event.get("volume", 0) or 0)
-
             # 找 moneyline market
+            # market question 格式：「Team A vs. Team B」（直接隊名對決）
             for m in event.get("markets", []):
                 question = m.get("question", "")
+                # 只要格式是「隊名 vs. 隊名」的主盤，排除其他特殊盤
                 if "vs." not in question:
                     continue
-                if any(x in question.lower() for x in ["spread","total","runs","innings","strikeout","home run","score"]):
+                if any(x in question.lower() for x in ["will there","spread","o/u","over","under","inning","strikeout","home run","score","win the"]):
                     continue
 
                 outcomes_raw = m.get("outcomes", "[]")
@@ -837,8 +836,8 @@ async def fetch_polymarket_mlb_odds():
                 except: continue
                 if not (0 < p1 < 1 and 0 < p2 < 1): continue
 
-                # 直接用 event 層級的 volume24hr（這才是 Polymarket 網站顯示的數字）
-                vol = e_vol
+                # market 的 volumeNum 才是正確金額（例如 Astros market = $37,546）
+                vol = float(m.get("volumeNum", 0) or m.get("volume", 0) or 0)
                 # 找對應完整隊名
                 MLB_FULL = {
                     "Astros":"Houston Astros","Mariners":"Seattle Mariners",
