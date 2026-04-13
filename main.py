@@ -769,9 +769,9 @@ async def fetch_polymarket_mlb_odds():
                 params={
                     "active": "true",
                     "closed": "false",
-                    "limit": "80",
-                    "tag_slug": "baseball",
-                    "order": "volume",
+                    "limit": "50",
+                    "tag_slug": "mlb",
+                    "order": "volume24hr",
                     "ascending": "false",
                 },
                 headers={"User-Agent": "Mozilla/5.0"}
@@ -790,15 +790,24 @@ async def fetch_polymarket_mlb_odds():
 
         for event in events:
             event_title = event.get("title", "")
+            # 今日單場比賽的標題格式是 "TeamA vs. TeamB"
+            if "vs." not in event_title:
+                continue
+
+            # 確認是兩支 MLB 球隊
             found_teams = [t for t in mlb_teams if t in event_title]
             if len(found_teams) < 2:
                 continue
 
+            # 直接用 event 層級的 volume24hr（今日單場就在這裡）
+            e_vol = float(event.get("volume24hr", 0) or event.get("volume", 0) or 0)
+
+            # 找 moneyline market
             for m in event.get("markets", []):
                 question = m.get("question", "")
-                if "vs." not in question and " vs " not in question:
+                if "vs." not in question:
                     continue
-                if any(x in question.lower() for x in ["spread","total","runs","innings","strikeout","home run"]):
+                if any(x in question.lower() for x in ["spread","total","runs","innings","strikeout","home run","score"]):
                     continue
 
                 outcomes_raw = m.get("outcomes", "[]")
@@ -828,10 +837,9 @@ async def fetch_polymarket_mlb_odds():
                 except: continue
                 if not (0 < p1 < 1 and 0 < p2 < 1): continue
 
-                # 交易量：優先用 market 層級，再用 event 層級
-                m_vol = float(m.get("volume", 0) or m.get("volumeNum", 0) or 0)
-                e_vol = float(event.get("volume", 0) or event.get("volume24hr", 0) or 0)
-                vol = max(m_vol, e_vol)
+                # market 層級 volume 優先，沒有就用 event 層級
+                m_vol = float(m.get("volumeNum", 0) or m.get("volume", 0) or 0)
+                vol = m_vol if m_vol > 0 else e_vol
                 # 找對應完整隊名
                 MLB_FULL = {
                     "Astros":"Houston Astros","Mariners":"Seattle Mariners",
