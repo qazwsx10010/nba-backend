@@ -913,32 +913,42 @@ async def get_mlb_team_data():
 
 @app.get("/api/mlb/polymarket/debug")
 async def debug_mlb_polymarket():
-    """除錯：搜尋今日 MLB 單場比賽"""
+    """除錯：搜尋今日 MLB 單場比賽 - 試所有可能的 tag"""
     try:
         import json as _json
         results = []
-        # 試不同搜尋方式
-        searches = [
-            {"active":"true","closed":"false","limit":"20","tag_slug":"mlb","order":"volume24hr","ascending":"false"},
-            {"active":"true","closed":"false","limit":"20","q":"MLB","order":"volume24hr","ascending":"false"},
-            {"active":"true","closed":"false","limit":"20","q":"Astros","order":"volume24hr","ascending":"false"},
-        ]
+        tags_to_try = ["mlb", "mlb-games", "mlb-daily", "baseball-games", "sports", "daily-baseball"]
         async with httpx.AsyncClient(timeout=20) as client:
-            for params in searches:
+            for tag in tags_to_try:
                 res = await client.get(
                     "https://gamma-api.polymarket.com/events",
-                    params=params,
+                    params={"active":"true","closed":"false","limit":"5","tag_slug":tag,"order":"volume24hr","ascending":"false"},
                     headers={"User-Agent":"Mozilla/5.0"}
                 )
                 data = res.json()
                 events = data if isinstance(data, list) else data.get("events", [])
                 results.append({
-                    "params": params,
+                    "tag_slug": tag,
                     "count": len(events),
-                    "titles": [ev.get("title","") for ev in events[:5]],
-                    "tags": [ev.get("tags",[]) for ev in events[:3]],
+                    "titles": [ev.get("title","") for ev in events[:3]],
+                    "first_tags": [t.get("slug","") for t in (events[0].get("tags",[]) if events else [])],
+                    "first_vol24hr": events[0].get("volume24hr") if events else None,
                 })
-        return {"searches": results}
+            # 也試直接搜尋 "vs" 關鍵字找今日比賽
+            res2 = await client.get(
+                "https://gamma-api.polymarket.com/events",
+                params={"active":"true","closed":"false","limit":"20","q":"vs","order":"volume24hr","ascending":"false"},
+                headers={"User-Agent":"Mozilla/5.0"}
+            )
+            data2 = res2.json()
+            events2 = data2 if isinstance(data2, list) else data2.get("events", [])
+            mlb_games = [ev.get("title","") for ev in events2 if any(t in ev.get("title","") for t in ["Astros","Yankees","Dodgers","Mets","Cubs","Red Sox","Padres","Giants","Braves","Phillies","Mariners","Orioles","Brewers","Twins","Rangers","Guardians","Rays","Tigers","Royals","Angels","Reds","Pirates","Marlins","Rockies","Nationals","Blue Jays"])]
+            results.append({
+                "tag_slug": "q=vs (all sports)",
+                "count": len(events2),
+                "mlb_game_titles": mlb_games[:10],
+            })
+        return {"results": results}
     except Exception as e:
         return {"error": str(e)}
 
