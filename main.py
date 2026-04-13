@@ -920,24 +920,44 @@ async def get_mlb_team_data():
 
 @app.get("/api/mlb/polymarket/debug")
 async def debug_mlb_polymarket():
-    """除錯：直接抓 mlb tag 看原始回應"""
+    """除錯：看 Astros vs Mariners 的 market questions"""
     try:
+        import json as _json
         async with httpx.AsyncClient(timeout=20) as client:
             res = await client.get(
                 "https://gamma-api.polymarket.com/events",
                 params={"active":"true","closed":"false","limit":"10","tag_slug":"mlb","order":"volume24hr","ascending":"false"},
                 headers={"User-Agent":"Mozilla/5.0"}
             )
-            raw_text = res.text[:3000]
-            status_code = res.status_code
-            try:
-                data = res.json()
-                events = data if isinstance(data, list) else data.get("events", [])
-                titles = [ev.get("title","") for ev in events]
-                vols = [{"title":ev.get("title",""),"vol24hr":ev.get("volume24hr"),"vol":ev.get("volume")} for ev in events]
-                return {"status_code": status_code, "count": len(events), "titles": titles, "volumes": vols}
-            except:
-                return {"status_code": status_code, "raw": raw_text}
+            data = res.json()
+        events = data if isinstance(data, list) else data.get("events", [])
+        result = []
+        for ev in events:
+            title = ev.get("title","")
+            if "vs." not in title:
+                continue
+            vol24hr = ev.get("volume24hr", 0)
+            markets_info = []
+            for m in ev.get("markets", [])[:5]:
+                outcomes_raw = m.get("outcomes","[]")
+                prices_raw = m.get("outcomePrices","[]")
+                try: outcomes = _json.loads(outcomes_raw) if isinstance(outcomes_raw,str) else outcomes_raw
+                except: outcomes = []
+                try: prices = _json.loads(prices_raw) if isinstance(prices_raw,str) else prices_raw
+                except: prices = []
+                markets_info.append({
+                    "question": m.get("question",""),
+                    "outcomes": outcomes,
+                    "prices": prices,
+                    "volume": m.get("volume"),
+                    "volumeNum": m.get("volumeNum"),
+                })
+            result.append({
+                "title": title,
+                "vol24hr": vol24hr,
+                "markets": markets_info,
+            })
+        return {"games": result}
     except Exception as e:
         return {"error": str(e)}
 
