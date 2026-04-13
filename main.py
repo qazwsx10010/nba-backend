@@ -837,9 +837,8 @@ async def fetch_polymarket_mlb_odds():
                 except: continue
                 if not (0 < p1 < 1 and 0 < p2 < 1): continue
 
-                # market 層級 volume 優先，沒有就用 event 層級
-                m_vol = float(m.get("volumeNum", 0) or m.get("volume", 0) or 0)
-                vol = m_vol if m_vol > 0 else e_vol
+                # 直接用 event 層級的 volume24hr（這才是 Polymarket 網站顯示的數字）
+                vol = e_vol
                 # 找對應完整隊名
                 MLB_FULL = {
                     "Astros":"Houston Astros","Mariners":"Seattle Mariners",
