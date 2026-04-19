@@ -296,7 +296,7 @@ async def fetch_polymarket_odds():
                     "active": "true",
                     "closed": "false",
                     "limit": "400", 
-                    "tag_slug": "basketball",
+                    "tag_slug": "nba", # 改用 nba 分類，過濾掉一堆其他籃球聯賽
                     "order": "volume24hr",
                     "ascending": "false",
                 },
@@ -319,27 +319,29 @@ async def fetch_polymarket_odds():
                 "SAC":"Kings","SAS":"Spurs","TOR":"Raptors","UTA":"Jazz","WAS":"Wizards",
                 "SA":"Spurs","NY":"Knicks","NO":"Pelicans","LA":"Lakers","GS":"Warriors",
                 "PHOENIX":"Suns","OKLAHOMA":"Thunder","PHILLY":"76ers","SIXERS":"76ers",
-                "OKLAHOMA CITY":"Thunder","OKLA":"Thunder" # 確保雷霆絕對不會被漏掉
+                "OKLAHOMA CITY":"Thunder","OKLA":"Thunder" 
             }
             if n in abbr: return abbr[n]
             for f in ["Hawks", "Celtics", "Nets", "Hornets", "Bulls", "Cavaliers", "Mavericks", "Nuggets", "Pistons", "Warriors", "Rockets", "Pacers", "Clippers", "Lakers", "Grizzlies", "Heat", "Bucks", "Timberwolves", "Pelicans", "Knicks", "Thunder", "Magic", "76ers", "Suns", "Trail Blazers", "Kings", "Spurs", "Raptors", "Jazz", "Wizards"]:
                 if f.upper() in n: return f
             return None
 
-        non_nba_keywords = ["OILERS","FLAMES","LEAFS","CANUCKS","JETS","SENATORS","WNBA","NCAA","EUROLEAGUE","COLLEGE","CHELSEA","ARSENAL","DRAFT","MVP"]
+        # 加入 SERIES、CHAMPION 等字眼，徹底封殺動輒幾百萬的系列賽與總冠軍盤口
+        non_nba_keywords = ["OILERS","FLAMES","LEAFS","CANUCKS","JETS","SENATORS","WNBA","NCAA","EUROLEAGUE","COLLEGE","CHELSEA","ARSENAL","DRAFT","MVP","SERIES","ADVANCE","CHAMPION","ROOKIE","CONFERENCE","DIVISION","AWARD","CUP"]
 
         for event in events:
             event_vol = float(event.get("volume", 0) or event.get("volume24hr", 0) or 0)
             event_title = event.get("title", "").upper()
 
+            # 如果標題有包含系列賽，整場都跳過
             if any(kw in event_title for kw in non_nba_keywords):
                 continue
 
             for m in event.get("markets", []):
                 q = m.get("question", "").upper()
                 
-                # 移除了 FIRST（以免殺掉 First Round），加入了 SERIES, ADVANCE, CHAMPION 防止抓到系列賽
-                if any(x in q for x in ["SPREAD", "TOTAL", "OVER", "UNDER", "MARGIN", "RACE", "HALF", "QUARTER", "LEAD", "POINTS", "REBOUNDS", "ASSISTS", "SERIES", "ADVANCE", "CHAMPION"]):
+                # 排除單節、大小分等雜魚
+                if any(x in q for x in ["SPREAD", "TOTAL", "OVER", "UNDER", "MARGIN", "RACE", "HALF", "QUARTER", "LEAD", "POINTS", "REBOUNDS", "ASSISTS"]):
                     continue
 
                 outcomes_raw = m.get("outcomes", "[]")
@@ -355,8 +357,8 @@ async def fetch_polymarket_odds():
 
                 t1_raw, t2_raw = str(outcomes[0]).upper(), str(outcomes[1]).upper()
 
-                # 移除小數點 . 的防護，只鎖定明確帶有加減號的讓分盤
-                if "+" in t1_raw or "-" in t1_raw or "+" in t2_raw or "-" in t2_raw:
+                # 【終極防護】：只用加號 (+) 來判斷讓分盤，允許戰績(例如 Thunder 64-18) 的減號存在！
+                if "+" in t1_raw or "+" in t2_raw:
                     continue
 
                 t1 = resolve_team(t1_raw)
@@ -543,7 +545,7 @@ async def update_results():
         return {"status":"error","message":str(e)}
 
 @app.get("/")
-async def root(): return {"status":"ok","message":"NBA 預測系統後端運作中","version":"v3.3-polymarket-thunder-unlocked"}
+async def root(): return {"status":"ok","message":"NBA 預測系統後端運作中","version":"v3.4-polymarket-final-fix"}
 
 @app.get("/api/b2b")
 async def get_b2b(): return await fetch_b2b_status()
