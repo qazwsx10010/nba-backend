@@ -319,8 +319,6 @@ async def fetch_polymarket_odds():
 
         for event in events:
             event_title = event.get("title", "")
-            
-            # 從 Event 層級抓取整場比賽的總金額 (供防錯備用)
             event_volume = float(event.get("volume", 0) or event.get("volume24hr", 0) or 0)
 
             if any(kw in event_title for kw in non_nba_keywords):
@@ -330,16 +328,19 @@ async def fetch_polymarket_odds():
             if len(found_teams) < 2:
                 continue
 
-            # 尋找真正的主勝負盤 (Moneyline)
+            best_market = None
+            max_vol = -1
+
+            # 【終極修正】：不提早退出，把這場比賽所有的盤口全部掃過一次
             for m in event.get("markets", []):
                 question = m.get("question", "")
+                
+                # 排除明顯不是主勝負盤的關鍵字
+                if any(x in question.lower() for x in ["spread", "total", "points", "quarter", "half", "draw", "over", "under", "margin", "first", "race", "lead"]):
+                    continue
+
                 outcomes_raw = m.get("outcomes", "[]")
                 prices_raw = m.get("outcomePrices", "[]")
-
-                # 【關鍵修正】：不再強制要求盤口名稱必須包含 "vs."
-                # 只要名稱裡面「沒有」讓分、大小分、單節等字眼，且選項是兩支球隊，就是我們要的主盤口
-                if any(x in question.lower() for x in ["spread", "total", "points", "quarter", "half", "draw", "over", "under", "margin"]):
-                    continue
 
                 if isinstance(outcomes_raw, str):
                     try: outcomes = _json.loads(outcomes_raw)
@@ -351,11 +352,13 @@ async def fetch_polymarket_odds():
                     except: continue
                 else: prices = prices_raw
 
+                # 必須剛好兩個選項
                 if len(outcomes) != 2 or len(prices) != 2:
                     continue
 
                 t1, t2 = str(outcomes[0]).strip(), str(outcomes[1]).strip()
                 
+                # 選項名稱必須是這兩支球隊
                 if t1 not in nba_teams or t2 not in nba_teams:
                     continue
 
@@ -364,15 +367,19 @@ async def fetch_polymarket_odds():
                 except: continue
                 if not (0 < p1 < 1 and 0 < p2 < 1): continue
 
-                # 抓取該單一盤口的真實成交量 (Market Volume)
                 market_volume = float(m.get("volume", 0) or m.get("volume24hr", 0) or 0)
                 
-                # 若盤口完全沒成交量防錯，才使用 Event 總金額
-                vol = market_volume if market_volume > 0 else event_volume
+                # 【強制選取最高交易量的盤口】
+                if market_volume > max_vol:
+                    max_vol = market_volume
+                    best_market = (t1, t2, p1, p2, market_volume)
 
+            # 迴圈結束後，把交易量最大（最可靠）的那一個盤口寫入結果
+            if best_market:
+                t1, t2, p1, p2, market_volume = best_market
+                vol = market_volume if market_volume > 0 else event_volume
                 result[t1] = {"prob": round(p1*100,1), "volume": round(vol), "reliable": vol>=5000}
                 result[t2] = {"prob": round(p2*100,1), "volume": round(vol), "reliable": vol>=5000}
-                break  # 找到主盤口，處理完就跳出這個 event 的迴圈
 
         return {
             "status": "ok",
@@ -527,7 +534,7 @@ async def update_results():
         return {"status":"error","message":str(e)}
 
 @app.get("/")
-async def root(): return {"status":"ok","message":"NBA 預測系統後端運作中","version":"v3.1-polymarket-fixed"}
+async def root(): return {"status":"ok","message":"NBA 預測系統後端運作中","version":"v3.1-polymarket-maxvol"}
 
 @app.get("/api/b2b")
 async def get_b2b(): return await fetch_b2b_status()
