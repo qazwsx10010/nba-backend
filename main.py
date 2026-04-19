@@ -80,20 +80,6 @@ TW_TEAM_MAP = {
     "猶他爵士":"Utah Jazz","華盛頓巫師":"Washington Wizards",
 }
 
-# ESPN 球隊 ID 對照（用於抓傷兵和賽程）
-ESPN_TEAM_IDS = {
-    "Atlanta Hawks":"1","Boston Celtics":"2","Brooklyn Nets":"17",
-    "Charlotte Hornets":"30","Chicago Bulls":"4","Cleveland Cavaliers":"5",
-    "Dallas Mavericks":"6","Denver Nuggets":"7","Detroit Pistons":"8",
-    "Golden State Warriors":"9","Houston Rockets":"10","Indiana Pacers":"11",
-    "Los Angeles Clippers":"12","Los Angeles Lakers":"13","Memphis Grizzlies":"29",
-    "Miami Heat":"14","Milwaukee Bucks":"15","Minnesota Timberwolves":"16",
-    "New Orleans Pelicans":"3","New York Knicks":"18","Oklahoma City Thunder":"25",
-    "Orlando Magic":"19","Philadelphia 76ers":"20","Phoenix Suns":"21",
-    "Portland Trail Blazers":"22","Sacramento Kings":"23","San Antonio Spurs":"24",
-    "Toronto Raptors":"28","Utah Jazz":"26","Washington Wizards":"27",
-}
-
 def inj_penalty(injuries_list):
     return sum(4 if i.get("status_type")=="Out" else 2 if i.get("status_type")=="Doubtful" else 1 for i in injuries_list)
 
@@ -103,11 +89,9 @@ def calc_model(home_en, away_en, bp, home_inj=None, away_inj=None, home_b2b=Fals
     ha=h.get("abbr",""); aa=a.get("abbr","")
     elo_p=1/(1+10**(-(h["elo"]-a["elo"]+70)/400))
     off_p=0.5+((h["pts"]-a["opp"])-(a["pts"]-h["opp"]))*0.012
-    # 傷兵調整
     hi=inj_penalty(home_inj or [])
     ai=inj_penalty(away_inj or [])
     inj_adj=(ai-hi)*0.02
-    # B2B 調整（-5% 勝率）
     b2b_adj=(-0.05 if home_b2b else 0)+(0.05 if away_b2b else 0)
     model=elo_p*0.35+off_p*0.25+bp*0.3+0.5*0.1+inj_adj+b2b_adj
     return max(0.05,min(0.95,model))
@@ -146,9 +130,7 @@ async def init_db():
         try: await conn.execute(f"ALTER TABLE predictions ADD COLUMN IF NOT EXISTS {col}")
         except: pass
     await conn.close()
-    print("✅ DB 初始化完成")
 
-# ── ESPN 真實傷兵 API
 async def fetch_espn_injuries():
     try:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -175,7 +157,6 @@ async def fetch_espn_injuries():
     except Exception as e:
         return {"status":"error","message":str(e),"injuries":{}}
 
-# ── ESPN B2B 偵測（看昨天有沒有比賽）
 async def fetch_b2b_status():
     try:
         yesterday=(date.today()-timedelta(days=1)).strftime("%Y%m%d")
@@ -184,13 +165,11 @@ async def fetch_b2b_status():
             res_y=await client.get(f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={yesterday}")
             res_t=await client.get(f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={today}")
         yd=res_y.json(); td=res_t.json()
-        # 昨天打球的隊伍
         played_yesterday=set()
         for ev in yd.get("events",[]):
             for comp in ev.get("competitions",[]):
                 for team in comp.get("competitors",[]):
                     played_yesterday.add(team["team"]["displayName"])
-        # 今天打球的隊伍
         playing_today={}
         for ev in td.get("events",[]):
             for comp in ev.get("competitions",[]):
@@ -201,9 +180,7 @@ async def fetch_b2b_status():
     except Exception as e:
         return {"status":"error","message":str(e),"b2b":{}}
 
-# ── NBA Stats API 更新球隊數據
 async def fetch_nba_stats():
-    """用 ESPN standings API 抓取球隊勝敗數據 + 近期10場狀態"""
     try:
         updated = 0
         async with httpx.AsyncClient(timeout=20) as client:
@@ -218,8 +195,7 @@ async def fetch_nba_stats():
         for conf in children:
             for entry in conf.get("standings", {}).get("entries", []):
                 team_name = entry.get("team", {}).get("displayName", "")
-                if team_name == "LA Clippers":
-                    team_name = "Los Angeles Clippers"
+                if team_name == "LA Clippers": team_name = "Los Angeles Clippers"
                 wins = losses = 0
                 pts = opp = None
                 recent_adj_raw = 0
@@ -237,12 +213,12 @@ async def fetch_nba_stats():
                     if n == "avgPointsFor":
                         try:
                             val = round(float(v), 1)
-                            if val > 80: pts = val  # 合理場均得分
+                            if val > 80: pts = val
                         except: pass
                     if n == "avgPointsAgainst":
                         try:
                             val = round(float(v), 1)
-                            if val > 80: opp = val  # 合理場均失分
+                            if val > 80: opp = val
                         except: pass
                     if n == "Last Ten Games":
                         recent_str = sdv
@@ -260,21 +236,15 @@ async def fetch_nba_stats():
                 if team_name in TEAM_DATA and wins + losses > 0:
                     games = wins + losses
                     win_pct = wins / games
-                    new_elo = round(1500 + (win_pct - 0.5) * 800)
-                    # 加入近期10場調整（±50分）
-                    new_elo = new_elo + recent_adj_raw
+                    new_elo = round(1500 + (win_pct - 0.5) * 800) + recent_adj_raw
                     TEAM_DATA[team_name]["recent_adj"] = recent_adj_raw
                     TEAM_DATA[team_name]["elo"] = new_elo
-                    # pointsFor/Against 是全季總分，需除以場次
-                    if pts and pts > 80:
-                        TEAM_DATA[team_name]["pts"] = pts
-                    if opp and opp > 80:
-                        TEAM_DATA[team_name]["opp"] = opp
-                    # 解析主客場勝率（ESPN 欄位名稱）
+                    if pts and pts > 80: TEAM_DATA[team_name]["pts"] = pts
+                    if opp and opp > 80: TEAM_DATA[team_name]["opp"] = opp
+                    
                     home_w=home_l=away_w=away_l=0
                     for stat in entry.get("stats", []):
                         n=stat.get("name","")
-                        # 試多種可能的欄位名稱
                         if n in ("homeWins","homeRecord") and "-" not in str(stat.get("value","")):
                             try: home_w=int(stat.get("value",0))
                             except: pass
@@ -287,7 +257,6 @@ async def fetch_nba_stats():
                         if n in ("roadLosses","awayLosses"):
                             try: away_l=int(stat.get("value",0))
                             except: pass
-                        # 有些 ESPN API 用 "Home" 格式 "W-L"
                         if n == "Home":
                             try:
                                 parts = str(stat.get("displayValue","")).split("-")
@@ -311,20 +280,16 @@ async def fetch_nba_stats():
                         "recent": recent_str
                     }
                     updated += 1
-                    recent_adj_raw = 0  # 重置避免污染下一筆
+                    recent_adj_raw = 0
 
-        print(f"✅ ESPN Stats 更新 {updated} 支球隊（含近期狀態）")
         return {"status": "ok", "updated": updated, "stats": stats}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# ── Polymarket NBA 勝率（後端抓，解決 CORS 問題）
 async def fetch_polymarket_odds():
-    """從後端抓 Polymarket NBA 今日單場勝負賭盤"""
     try:
         import json as _json
         async with httpx.AsyncClient(timeout=20) as client:
-            # 用 basketball tag 篩選，不依賴排名
             res = await client.get(
                 "https://gamma-api.polymarket.com/events",
                 params={
@@ -349,35 +314,31 @@ async def fetch_polymarket_odds():
             "Trail Blazers","Kings","Spurs","Raptors","Jazz","Wizards"
         }
 
-        # 冰球或其他運動隊名（避免誤判）
         non_nba_keywords = ["Oilers","Flames","Leafs","Canucks","Jets","Senators",
                            "IPL","Premier League","Champions League","Arsenal","Chelsea"]
 
         for event in events:
-            event_volume = float(event.get("volume24hr", 0) or event.get("volume", 0) or 0)
             event_title = event.get("title", "")
+            
+            # 從 Event 層級抓取整場比賽的總金額 (供防錯備用)
+            event_volume = float(event.get("volume", 0) or event.get("volume24hr", 0) or 0)
 
-            # 跳過非 NBA 賽事
             if any(kw in event_title for kw in non_nba_keywords):
                 continue
 
-            # 從 title 找出兩支 NBA 球隊
             found_teams = [t for t in nba_teams if t in event_title]
             if len(found_teams) < 2:
                 continue
 
-            home_team, away_team = found_teams[0], found_teams[1]
-
-            # 找 moneyline market（格式："TeamA vs. TeamB"）
+            # 尋找真正的主勝負盤 (Moneyline)
             for m in event.get("markets", []):
                 question = m.get("question", "")
                 outcomes_raw = m.get("outcomes", "[]")
                 prices_raw = m.get("outcomePrices", "[]")
 
-                # 只要 "X vs. Y" 格式（不要 Spread、Total 等）
-                if "vs." not in question or question.startswith("Spread") or question.startswith("Total"):
-                    continue
-                if any(x in question.lower() for x in ["spread","total","points","quarter","half","draw"]):
+                # 【關鍵修正】：不再強制要求盤口名稱必須包含 "vs."
+                # 只要名稱裡面「沒有」讓分、大小分、單節等字眼，且選項是兩支球隊，就是我們要的主盤口
+                if any(x in question.lower() for x in ["spread", "total", "points", "quarter", "half", "draw", "over", "under", "margin"]):
                     continue
 
                 if isinstance(outcomes_raw, str):
@@ -394,7 +355,7 @@ async def fetch_polymarket_odds():
                     continue
 
                 t1, t2 = str(outcomes[0]).strip(), str(outcomes[1]).strip()
-                # 確認兩個都是 NBA 球隊
+                
                 if t1 not in nba_teams or t2 not in nba_teams:
                     continue
 
@@ -403,28 +364,24 @@ async def fetch_polymarket_odds():
                 except: continue
                 if not (0 < p1 < 1 and 0 < p2 < 1): continue
 
-                vol = event_volume
+                # 抓取該單一盤口的真實成交量 (Market Volume)
+                market_volume = float(m.get("volume", 0) or m.get("volume24hr", 0) or 0)
+                
+                # 若盤口完全沒成交量防錯，才使用 Event 總金額
+                vol = market_volume if market_volume > 0 else event_volume
+
                 result[t1] = {"prob": round(p1*100,1), "volume": round(vol), "reliable": vol>=5000}
                 result[t2] = {"prob": round(p2*100,1), "volume": round(vol), "reliable": vol>=5000}
-                break
+                break  # 找到主盤口，處理完就跳出這個 event 的迴圈
 
         return {
             "status": "ok",
             "odds": result,
-            "markets": len(result)//2,
-            "raw_count": len(events),
-            "debug_titles": [ev.get("title","") for ev in events][:15],
-            "debug_questions": [
-                m.get("question","")
-                for ev in events
-                for m in ev.get("markets",[])[:2]
-                if any(t in ev.get("title","") for t in nba_teams)
-            ][:10]
+            "markets": len(result)//2
         }
     except Exception as e:
         return {"status": "error", "message": str(e), "odds": {}}
 
-# ── 台灣運彩讓分
 async def fetch_tw_odds(target_date=None):
     if not target_date: target_date=date.today().strftime("%Y-%m-%d")
     try:
@@ -460,9 +417,7 @@ async def fetch_tw_odds(target_date=None):
 
 async def fetch_and_predict():
     if not ODDS_KEY or not DB_URL: return {"status":"error","message":"缺少設定"}
-    print(f"[{datetime.now(TW).strftime('%Y-%m-%d %H:%M')}] 抓取今日賽程...")
     try:
-        # 同時抓傷兵和B2B
         inj_data=await fetch_espn_injuries()
         b2b_data=await fetch_b2b_status()
         injuries=inj_data.get("injuries",{})
@@ -503,27 +458,23 @@ async def fetch_and_predict():
                 if abs(diff)<0.5:
                     bet=hEn if mp>=0.5 else aEn; odds=h2hH if mp>=0.5 else h2hA; btype="不讓分"
                 elif diff>0:
-                    # 主場隊伍表現優於讓分 → 下注主場
                     bet=hEn; odds=spHO or 1.72
                     btype=f"讓分 {spLine}" if spLine<0 else f"吃分 +{spLine}"
                 else:
-                    # 客場隊伍表現優於讓分 → 下注客場
                     bet=aEn; odds=spAO or 1.72
-                    away_spread=-spLine  # 客場讓分是主場讓分的相反
+                    away_spread=-spLine
                     btype=f"讓分 {away_spread}" if away_spread<0 else f"吃分 +{away_spread}"
             else:
                 bet=hEn if mp>=0.5 else aEn; odds=h2hH if mp>=0.5 else h2hA; btype="不讓分"
             ev=(conf/100*odds-1)*100
             exists=await conn.fetchrow("SELECT id,result FROM predictions WHERE game_date=$1 AND home_team=$2 AND away_team=$3",today,hEn,aEn)
             if not exists:
-                # 新增預測
                 await conn.execute("""
                     INSERT INTO predictions(game_date,home_team,away_team,predicted_winner,confidence,bet_type,bet_odds,ev_pct,spread_line,model_spread,home_b2b,away_b2b)
                     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
                 """,today,hEn,aEn,bet,conf,btype,odds,ev,spLine,ms,home_b2b,away_b2b)
                 saved+=1
             elif exists["result"] is None:
-                # 比賽尚未結束 → 更新為最新傷兵/模型數據
                 await conn.execute("""
                     UPDATE predictions SET predicted_winner=$1,confidence=$2,bet_type=$3,
                     bet_odds=$4,ev_pct=$5,spread_line=$6,model_spread=$7,home_b2b=$8,away_b2b=$9
@@ -531,7 +482,6 @@ async def fetch_and_predict():
                 """,bet,conf,btype,odds,ev,spLine,ms,home_b2b,away_b2b,exists["id"])
                 saved+=1
         await conn.close()
-        print(f"✅ 儲存 {saved} 場")
         return {"status":"ok","saved":saved}
     except Exception as e:
         return {"status":"error","message":str(e)}
@@ -560,17 +510,11 @@ async def update_results():
                 spread_line=row["spread_line"]
                 predicted=row["predicted_winner"]
 
-                # 根據下注方式判斷結果
                 if "讓分" in bet_type and spread_line is not None:
-                    # 讓分：主場隊伍讓分，主場分數 + 讓分值 > 客場分數才算贏
-                    # spread_line 是負數（主場讓分），例如 -16.5
                     result = (hScore + spread_line) > aScore
                 elif "吃分" in bet_type and spread_line is not None:
-                    # 吃分：客場吃分，客場分數 - 讓分值 > 主場分數才算贏
-                    # spread_line 是負數，吃分就是客場加回去
                     result = (aScore - spread_line) > hScore
                 else:
-                    # 不讓分：直接比較誰贏
                     result = predicted == winner
 
                 await conn.execute(
@@ -578,52 +522,18 @@ async def update_results():
                     winner,hScore,aScore,result,row["id"])
                 updated+=1
         await conn.close()
-        print(f"✅ 更新 {updated} 場結果")
         return {"status":"ok","updated":updated}
     except Exception as e:
         return {"status":"error","message":str(e)}
 
-# ── API 路由
 @app.get("/")
-async def root(): return {"status":"ok","message":"NBA 預測系統後端運作中","version":"v3.1-polymarket"}
-
-@app.get("/api/trigger/nba-stats")
-async def trigger_nba_stats():
-    """手動觸發 NBA Stats 更新"""
-    result = await fetch_nba_stats()
-    return result
-
-@app.get("/api/trigger/debug-stats")
-async def debug_stats():
-    """查看 ESPN standings 的真實 stat 欄位名稱"""
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            res = await client.get(
-                "https://site.api.espn.com/apis/v2/sports/basketball/nba/standings",
-                params={"season": "2026"}
-            )
-            data = res.json()
-        children = data.get("children", [])
-        # 只取第一隊的所有 stat 名稱
-        for conf in children:
-            entries = conf.get("standings", {}).get("entries", [])
-            if entries:
-                entry = entries[0]
-                team = entry.get("team", {}).get("displayName", "")
-                stats = entry.get("stats", [])
-                stat_names = [{"name": s.get("name"), "displayName": s.get("displayName"), "value": s.get("value"), "displayValue": s.get("displayValue")} for s in stats]
-                return {"team": team, "stat_count": len(stats), "stats": stat_names}
-        return {"error": "no entries"}
-    except Exception as e:
-        return {"error": str(e)}
-async def get_injuries(): return await fetch_espn_injuries()
+async def root(): return {"status":"ok","message":"NBA 預測系統後端運作中","version":"v3.1-polymarket-fixed"}
 
 @app.get("/api/b2b")
 async def get_b2b(): return await fetch_b2b_status()
 
 @app.get("/api/team-data")
 async def get_team_data():
-    """回傳最新的球隊數據（ELO、得失分、近期狀態、主客場勝率），供前端計算用"""
     result = {}
     for name, d in TEAM_DATA.items():
         abbr = d.get("abbr","")
@@ -633,64 +543,15 @@ async def get_team_data():
             "pts": d.get("pts", 110),
             "opp": d.get("opp", 110),
             "pace": d.get("pace", 99),
-            "recent_adj": d.get("recent_adj", 0),  # 近期10場調整值
+            "recent_adj": d.get("recent_adj", 0),
         }
     return {"status": "ok", "data": result}
-
-@app.get("/api/nba-stats/debug")
-async def debug_nba_stats():
-    async with httpx.AsyncClient(timeout=20) as client:
-        res = await client.get("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams?limit=2")
-        data = res.json()
-    # 只回傳第一支球隊的完整結構
-    teams = data.get("sports",[{}])[0].get("leagues",[{}])[0].get("teams",[])
-    return teams[0] if teams else {"error":"no teams"}
 
 @app.get("/api/nba-stats")
 async def get_nba_stats(): return await fetch_nba_stats()
 
 @app.get("/api/polymarket")
 async def get_polymarket(): return await fetch_polymarket_odds()
-
-@app.get("/api/polymarket/debug2")
-async def debug_polymarket2():
-    """除錯：直接看 events 的 market outcomes 格式"""
-    try:
-        import json as _json
-        async with httpx.AsyncClient(timeout=20) as client:
-            res = await client.get(
-                "https://gamma-api.polymarket.com/events",
-                params={"active":"true","closed":"false","limit":"5","order":"volume24hr","ascending":"false"},
-                headers={"User-Agent":"Mozilla/5.0"}
-            )
-            data = res.json()
-        events = data if isinstance(data, list) else data.get("events", [])
-        result = []
-        for ev in events[:3]:
-            markets_info = []
-            for m in ev.get("markets", [])[:2]:
-                outcomes_raw = m.get("outcomes","[]")
-                prices_raw = m.get("outcomePrices","[]")
-                try: outcomes = _json.loads(outcomes_raw) if isinstance(outcomes_raw,str) else outcomes_raw
-                except: outcomes = outcomes_raw
-                try: prices = _json.loads(prices_raw) if isinstance(prices_raw,str) else prices_raw
-                except: prices = prices_raw
-                markets_info.append({
-                    "question": m.get("question",""),
-                    "outcomes": outcomes,
-                    "prices": prices,
-                    "volume24hr": m.get("volume24hr"),
-                    "volume": m.get("volume"),
-                })
-            result.append({
-                "title": ev.get("title",""),
-                "volume24hr": ev.get("volume24hr"),
-                "markets_count": len(ev.get("markets",[])),
-                "markets_sample": markets_info
-            })
-        return {"events": result}
-    except Exception as e:
-        return {"error": str(e)}
 
 @app.get("/api/tw-odds")
 async def get_tw_odds(date_str:str=None): return await fetch_tw_odds(date_str)
@@ -747,18 +608,11 @@ scheduler=AsyncIOScheduler(timezone=TW)
 @app.on_event("startup")
 async def startup():
     await init_db()
-
-    # 付費/有限制 API
-    scheduler.add_job(fetch_and_predict,"cron",hour=8,minute=0)   # 早上8點預測
-    scheduler.add_job(fetch_and_predict,"cron",hour=15,minute=0)  # 下午3點更新預測
-    scheduler.add_job(update_results,"cron",hour=2,minute=0)      # 凌晨2點更新結果
-
-    # 免費 API → 每小時更新
-    scheduler.add_job(fetch_nba_stats,"cron",minute=0)       # 每小時整點：ELO/得失分/近期/主客場
-    scheduler.add_job(fetch_espn_injuries,"cron",minute=15)   # 每小時15分：傷兵
-    scheduler.add_job(fetch_b2b_status,"cron",minute=30)      # 每小時30分：B2B
-
+    scheduler.add_job(fetch_and_predict,"cron",hour=8,minute=0)
+    scheduler.add_job(fetch_and_predict,"cron",hour=15,minute=0)
+    scheduler.add_job(update_results,"cron",hour=2,minute=0)
+    scheduler.add_job(fetch_nba_stats,"cron",minute=0)
+    scheduler.add_job(fetch_espn_injuries,"cron",minute=15)
+    scheduler.add_job(fetch_b2b_status,"cron",minute=30)
     scheduler.start()
-    # 啟動時立即執行一次所有免費資料更新
     await fetch_nba_stats()
-    print("✅ 後端啟動完成，所有免費資料已更新")
