@@ -354,7 +354,6 @@ async def fetch_polymarket_odds():
                            "IPL","Premier League","Champions League","Arsenal","Chelsea"]
 
         for event in events:
-            event_volume = float(event.get("volume24hr", 0) or event.get("volume", 0) or 0)
             event_title = event.get("title", "")
 
             # 跳過非 NBA 賽事
@@ -403,7 +402,10 @@ async def fetch_polymarket_odds():
                 except: continue
                 if not (0 < p1 < 1 and 0 < p2 < 1): continue
 
-                vol = event_volume
+                # 【修正處】改從 Market 層級抓取，且優先抓總交易量(volume)
+                market_volume = float(m.get("volume", 0) or m.get("volume24hr", 0) or 0)
+                vol = market_volume
+
                 result[t1] = {"prob": round(p1*100,1), "volume": round(vol), "reliable": vol>=5000}
                 result[t2] = {"prob": round(p2*100,1), "volume": round(vol), "reliable": vol>=5000}
                 break
