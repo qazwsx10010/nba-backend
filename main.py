@@ -295,7 +295,7 @@ async def fetch_polymarket_odds():
                 params={
                     "active": "true",
                     "closed": "false",
-                    "limit": "100",  # 提高抓取數量，避免熱門賽事被洗掉
+                    "limit": "300", # 【終極防護1】拉滿到 300 筆，防止雷霆被特殊玩法洗掉
                     "tag_slug": "basketball",
                     "order": "volume24hr",
                     "ascending": "false",
@@ -307,7 +307,7 @@ async def fetch_polymarket_odds():
         events = data if isinstance(data, list) else data.get("events", [])
         result = {}
 
-        # 暴力破解版：NBA 全球隊名對照表
+        # 建立最強大的球隊翻譯機
         def resolve_team(name):
             n = str(name).strip().upper()
             abbr = {
@@ -317,7 +317,8 @@ async def fetch_polymarket_odds():
                 "MIA":"Heat","MIL":"Bucks","MIN":"Timberwolves","NOP":"Pelicans","NYK":"Knicks",
                 "OKC":"Thunder","ORL":"Magic","PHI":"76ers","PHX":"Suns","POR":"Trail Blazers",
                 "SAC":"Kings","SAS":"Spurs","TOR":"Raptors","UTA":"Jazz","WAS":"Wizards",
-                "SA":"Spurs","NY":"Knicks","NO":"Pelicans","LA":"Lakers","GS":"Warriors"
+                "SA":"Spurs","NY":"Knicks","NO":"Pelicans","LA":"Lakers","GS":"Warriors",
+                "PHOENIX":"Suns","OKLAHOMA":"Thunder","PHILLY":"76ers"
             }
             if n in abbr: return abbr[n]
             nba_full = ["Hawks", "Celtics", "Nets", "Hornets", "Bulls", "Cavaliers", "Mavericks", "Nuggets", "Pistons", "Warriors", "Rockets", "Pacers", "Clippers", "Lakers", "Grizzlies", "Heat", "Bucks", "Timberwolves", "Pelicans", "Knicks", "Thunder", "Magic", "76ers", "Suns", "Trail Blazers", "Kings", "Spurs", "Raptors", "Jazz", "Wizards"]
@@ -325,8 +326,7 @@ async def fetch_polymarket_odds():
                 if f.upper() in n: return f
             return None
 
-        # 排除明顯不是 NBA 的關鍵字
-        non_nba_keywords = ["OILERS","FLAMES","LEAFS","CANUCKS","JETS","SENATORS","WNBA","NCAA","EUROLEAGUE","COLLEGE","CHELSEA","ARSENAL"]
+        non_nba_keywords = ["OILERS","FLAMES","LEAFS","CANUCKS","JETS","SENATORS","WNBA","NCAA","EUROLEAGUE","COLLEGE","CHELSEA","ARSENAL","DRAFT","MVP"]
 
         for event in events:
             event_title = event.get("title", "").upper()
@@ -334,16 +334,14 @@ async def fetch_polymarket_odds():
             if any(kw in event_title for kw in non_nba_keywords):
                 continue
 
+            # 【終極防護2】只信任 Event 最外層的總金額，無視 Market 裡面常常出 bug 的 0 元
             event_volume = float(event.get("volume", 0) or event.get("volume24hr", 0) or 0)
-            best_market = None
-            max_score = -1
 
-            # 不再檢查標題有沒有包含兩支球隊，直接掃描所有盤口
             for m in event.get("markets", []):
                 q = m.get("question", "").upper()
                 
                 # 排除明顯不是主勝負盤的關鍵字
-                if any(x in q for x in ["SPREAD", "TOTAL", "POINTS", "QUARTER", "HALF", "OVER", "UNDER", "MARGIN", "RACE"]):
+                if any(x in q for x in ["SPREAD", "TOTAL", "OVER", "UNDER", "MARGIN", "RACE", "HALF", "QUARTER", "FIRST", "LEAD", "POINTS", "REBOUNDS"]):
                     continue
 
                 outcomes_raw = m.get("outcomes", "[]")
@@ -357,17 +355,16 @@ async def fetch_polymarket_odds():
                 if len(outcomes) != 2 or len(prices) != 2:
                     continue
 
-                t1_raw, t2_raw = str(outcomes[0]), str(outcomes[1])
+                t1_raw, t2_raw = str(outcomes[0]).upper(), str(outcomes[1]).upper()
 
-                # 【最強防禦】：如果選項裡面有 + 號、- 號 或 . (例如 +13.5)
-                # 代表這絕對是讓分盤或大小分，立刻踢掉！
-                if "+" in t1_raw or "-" in t1_raw or "." in t1_raw: continue
-                if "+" in t2_raw or "-" in t2_raw or "." in t2_raw: continue
+                # 【終極防護3】只要選項裡面包含加減號或小數點，100%是讓分盤，立刻踢掉！
+                if any(c in t1_raw for c in ["+", "-", "."]) or any(c in t2_raw for c in ["+", "-", "."]):
+                    continue
 
                 t1 = resolve_team(t1_raw)
                 t2 = resolve_team(t2_raw)
 
-                # 如果兩個選項都能成功轉成 NBA 隊名，這就是我們要的盤口！
+                # 如果兩個選項都能成功轉成 NBA 隊名，這就是我們唯一需要的主盤口！
                 if not t1 or not t2 or t1 == t2:
                     continue
 
@@ -376,21 +373,12 @@ async def fetch_polymarket_odds():
                 except: continue
                 if not (0 < p1 < 1 and 0 < p2 < 1): continue
 
-                market_vol = float(m.get("volume", 0) or m.get("volume24hr", 0) or 0)
-                market_liq = float(m.get("liquidity", 0) or 0)
-                score = market_vol + market_liq
+                # 【終極防護4】找到主盤口後，直接寫入結果並跳出！
+                # 強制套用 Event 總金額，不再浪費時間往下找其他雜魚盤口
+                result[t1] = {"prob": round(p1*100, 1), "volume": round(event_volume), "reliable": event_volume >= 5000}
+                result[t2] = {"prob": round(p2*100, 1), "volume": round(event_volume), "reliable": event_volume >= 5000}
                 
-                if score > max_score:
-                    max_score = score
-                    best_market = (t1, t2, p1, p2, market_vol, market_liq)
-
-            # 寫入最終結果
-            if best_market:
-                t1, t2, p1, p2, m_vol, m_liq = best_market
-                # 取最大值確保金額不會變成 0
-                final_vol = max(event_volume, m_vol, m_liq)
-                result[t1] = {"prob": round(p1*100,1), "volume": round(final_vol), "reliable": final_vol>=5000}
-                result[t2] = {"prob": round(p2*100,1), "volume": round(final_vol), "reliable": final_vol>=5000}
+                break  # 找到主盤口就立刻結束這場比賽的搜尋，防止被覆蓋
 
         return {
             "status": "ok",
@@ -545,7 +533,7 @@ async def update_results():
         return {"status":"error","message":str(e)}
 
 @app.get("/")
-async def root(): return {"status":"ok","message":"NBA 預測系統後端運作中","version":"v3.1-polymarket-master"}
+async def root(): return {"status":"ok","message":"NBA 預測系統後端運作中","version":"v3.1-polymarket-godmode"}
 
 @app.get("/api/b2b")
 async def get_b2b(): return await fetch_b2b_status()
