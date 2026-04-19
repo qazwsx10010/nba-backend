@@ -295,7 +295,7 @@ async def fetch_polymarket_odds():
                 params={
                     "active": "true",
                     "closed": "false",
-                    "limit": "300", 
+                    "limit": "400", 
                     "tag_slug": "basketball",
                     "order": "volume24hr",
                     "ascending": "false",
@@ -305,8 +305,6 @@ async def fetch_polymarket_odds():
             data = res.json()
 
         events = data if isinstance(data, list) else data.get("events", [])
-        
-        # 建立一個大倉庫，用來收集同一場比賽的所有盤口
         global_markets = {}
         result = {}
 
@@ -320,23 +318,28 @@ async def fetch_polymarket_odds():
                 "OKC":"Thunder","ORL":"Magic","PHI":"76ers","PHX":"Suns","POR":"Trail Blazers",
                 "SAC":"Kings","SAS":"Spurs","TOR":"Raptors","UTA":"Jazz","WAS":"Wizards",
                 "SA":"Spurs","NY":"Knicks","NO":"Pelicans","LA":"Lakers","GS":"Warriors",
-                "PHOENIX":"Suns","OKLAHOMA":"Thunder","PHILLY":"76ers","SIXERS":"76ers"
+                "PHOENIX":"Suns","OKLAHOMA":"Thunder","PHILLY":"76ers","SIXERS":"76ers",
+                "OKLAHOMA CITY":"Thunder","OKLA":"Thunder" # 確保雷霆絕對不會被漏掉
             }
             if n in abbr: return abbr[n]
-            # 模糊比對
             for f in ["Hawks", "Celtics", "Nets", "Hornets", "Bulls", "Cavaliers", "Mavericks", "Nuggets", "Pistons", "Warriors", "Rockets", "Pacers", "Clippers", "Lakers", "Grizzlies", "Heat", "Bucks", "Timberwolves", "Pelicans", "Knicks", "Thunder", "Magic", "76ers", "Suns", "Trail Blazers", "Kings", "Spurs", "Raptors", "Jazz", "Wizards"]:
                 if f.upper() in n: return f
             return None
 
-        # 【終極掃描邏輯】：把所有的 Event 裡面的所有 Market 都翻一遍
+        non_nba_keywords = ["OILERS","FLAMES","LEAFS","CANUCKS","JETS","SENATORS","WNBA","NCAA","EUROLEAGUE","COLLEGE","CHELSEA","ARSENAL","DRAFT","MVP"]
+
         for event in events:
             event_vol = float(event.get("volume", 0) or event.get("volume24hr", 0) or 0)
+            event_title = event.get("title", "").upper()
+
+            if any(kw in event_title for kw in non_nba_keywords):
+                continue
 
             for m in event.get("markets", []):
                 q = m.get("question", "").upper()
                 
-                # 排除大小分、單節勝負等雜魚
-                if any(x in q for x in ["SPREAD", "TOTAL", "OVER", "UNDER", "MARGIN", "RACE", "HALF", "QUARTER", "FIRST", "LEAD", "POINTS", "REBOUNDS", "ASSISTS"]):
+                # 移除了 FIRST（以免殺掉 First Round），加入了 SERIES, ADVANCE, CHAMPION 防止抓到系列賽
+                if any(x in q for x in ["SPREAD", "TOTAL", "OVER", "UNDER", "MARGIN", "RACE", "HALF", "QUARTER", "LEAD", "POINTS", "REBOUNDS", "ASSISTS", "SERIES", "ADVANCE", "CHAMPION"]):
                     continue
 
                 outcomes_raw = m.get("outcomes", "[]")
@@ -352,14 +355,13 @@ async def fetch_polymarket_odds():
 
                 t1_raw, t2_raw = str(outcomes[0]).upper(), str(outcomes[1]).upper()
 
-                # 排除帶有加減號的讓分盤
-                if any(c in t1_raw for c in ["+", "-", "."]) or any(c in t2_raw for c in ["+", "-", "."]):
+                # 移除小數點 . 的防護，只鎖定明確帶有加減號的讓分盤
+                if "+" in t1_raw or "-" in t1_raw or "+" in t2_raw or "-" in t2_raw:
                     continue
 
                 t1 = resolve_team(t1_raw)
                 t2 = resolve_team(t2_raw)
 
-                # 確定是兩支乾淨的 NBA 球隊
                 if not t1 or not t2 or t1 == t2:
                     continue
 
@@ -370,14 +372,10 @@ async def fetch_polymarket_odds():
                 m_vol = float(m.get("volume", 0) or 0)
                 m_liq = float(m.get("liquidity", 0) or 0)
                 
-                # 計算這個盤口的「權重分數」：流動性 + 單盤成交 + 事件總成交
                 score = m_vol + m_liq + event_vol
-
-                # 把兩支隊伍名字排序，當作這場比賽的「唯一識別碼」
                 teams = sorted([t1, t2])
                 matchup_key = f"{teams[0]}_vs_{teams[1]}"
 
-                # 【核心機制】：同場比賽，只保留分數最高（資金最大）的那個盤口
                 if matchup_key not in global_markets or score > global_markets[matchup_key]['score']:
                     display_vol = max(event_vol, m_vol, m_liq)
                     global_markets[matchup_key] = {
@@ -387,7 +385,6 @@ async def fetch_polymarket_odds():
                         "display_vol": display_vol
                     }
 
-        # 掃描完畢！把大倉庫裡過濾好的「最肥盤口」寫入結果
         for data in global_markets.values():
             vol = data["display_vol"]
             result[data["t1"]] = {"prob": round(data["p1"]*100, 1), "volume": round(vol), "reliable": vol >= 5000}
@@ -546,7 +543,7 @@ async def update_results():
         return {"status":"error","message":str(e)}
 
 @app.get("/")
-async def root(): return {"status":"ok","message":"NBA 預測系統後端運作中","version":"v3.2-polymarket-100percent"}
+async def root(): return {"status":"ok","message":"NBA 預測系統後端運作中","version":"v3.3-polymarket-thunder-unlocked"}
 
 @app.get("/api/b2b")
 async def get_b2b(): return await fetch_b2b_status()
