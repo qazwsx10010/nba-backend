@@ -76,7 +76,7 @@ TW_TEAM_MAP = {
     "奧克拉荷馬雷霆":"Oklahoma City Thunder","奧蘭多魔術":"Orlando Magic",
     "費城76人":"Philadelphia 76ers","鳳凰城太陽":"Phoenix Suns",
     "波特蘭拓荒者":"Portland Trail Blazers","沙加緬度國王":"Sacramento Kings",
-    "聖安東尼馬刺":"San Antonio Spurs","多倫多暴龍":"Toronto Raptors",
+    "聖安東尼奧馬刺":"San Antonio Spurs","多倫多暴龍":"Toronto Raptors",
     "猶他爵士":"Utah Jazz","華盛頓巫師":"Washington Wizards",
 }
 
@@ -314,7 +314,8 @@ async def fetch_polymarket_odds():
             "Trail Blazers","Kings","Spurs","Raptors","Jazz","Wizards"
         }
         
-        # 建立縮寫翻譯字典，解決 Polymarket 只回傳 PHI/BOS 的問題
+        # 建立大寫比對字典，徹底解決 Polymarket 大小寫亂給的問題
+        nba_teams_upper = {t.upper(): t for t in nba_teams}
         abbr_to_short = {
             "ATL": "Hawks", "BOS": "Celtics", "BKN": "Nets", "CHA": "Hornets",
             "CHI": "Bulls", "CLE": "Cavaliers", "DAL": "Mavericks", "DEN": "Nuggets",
@@ -336,18 +337,14 @@ async def fetch_polymarket_odds():
             if any(kw in event_title for kw in non_nba_keywords):
                 continue
 
-            found_teams = [t for t in nba_teams if t in event_title]
-            if len(found_teams) < 2:
-                continue
-
             best_market = None
-            max_vol = -1
+            max_score = -1  # 改用綜合分數評估盤口大小
 
             for m in event.get("markets", []):
-                question = m.get("question", "")
+                q_lower = m.get("question", "").lower()
                 
-                # 排除明顯不是主勝負盤的關鍵字
-                if any(x in question.lower() for x in ["spread", "total", "points", "quarter", "half", "draw", "over", "under", "margin", "first", "race", "lead"]):
+                # 排除明顯不是主勝負盤的關鍵字（拿掉 first，避免誤殺 playoff first round）
+                if any(x in q_lower for x in ["spread", "total", "points", "quarter", "half", "margin", "race", "lead", "over", "under"]):
                     continue
 
                 outcomes_raw = m.get("outcomes", "[]")
@@ -366,11 +363,12 @@ async def fetch_polymarket_odds():
                 if len(outcomes) != 2 or len(prices) != 2:
                     continue
 
-                t1_raw, t2_raw = str(outcomes[0]).strip(), str(outcomes[1]).strip()
+                # 強制轉大寫，解決 Polymarket 大小寫不一致導致雷霆隊消失的問題
+                t1_raw = str(outcomes[0]).strip().upper()
+                t2_raw = str(outcomes[1]).strip().upper()
                 
-                # 【完美解析】：不管 Polymarket 給的是 PHI、BOS，還是完整的 Philadelphia 76ers，通通都能轉換成正確的隊名
-                t1 = abbr_to_short.get(t1_raw.upper()) or next((t for t in nba_teams if t in t1_raw), None)
-                t2 = abbr_to_short.get(t2_raw.upper()) or next((t for t in nba_teams if t in t2_raw), None)
+                t1 = abbr_to_short.get(t1_raw) or next((nba_teams_upper[t] for t in nba_teams_upper if t in t1_raw), None)
+                t2 = abbr_to_short.get(t2_raw) or next((nba_teams_upper[t] for t in nba_teams_upper if t in t2_raw), None)
 
                 if not t1 or not t2:
                     continue
@@ -380,18 +378,23 @@ async def fetch_polymarket_odds():
                 except: continue
                 if not (0 < p1 < 1 and 0 < p2 < 1): continue
 
-                market_volume = float(m.get("volume", 0) or m.get("volume24hr", 0) or m.get("liquidity", 0) or 0)
+                # 【最強防護機制】：把資金池與交易量合併計分！
+                # 就算 Polymarket API 的 volume 欄位延遲當機顯示為 0，主盤口的 liquidity 絕對也是最高的
+                v = float(m.get("volume", 0))
+                v24 = float(m.get("volume24hr", 0))
+                liq = float(m.get("liquidity", 0))
+                score = v + v24 + liq
                 
-                # 強制選取最高交易量的盤口
-                if market_volume > max_vol:
-                    max_vol = market_volume
-                    best_market = (t1, t2, p1, p2, market_volume)
+                # 選出綜合資金規模最大的盤口，保證不會選到幾千塊的副盤
+                if score > max_score:
+                    max_score = score
+                    best_market = (t1, t2, p1, p2, v, liq)
 
-            # 抓出最完美的盤口後，寫入結果
+            # 寫入最終結果
             if best_market:
-                t1, t2, p1, p2, m_vol = best_market
-                # 取 Event 總金額與 Market 金額的最大值，呈現最真實的資金規模
-                final_vol = max(m_vol, event_volume)
+                t1, t2, p1, p2, m_vol, m_liq = best_market
+                # 取 Event 總金額、Market 交易量、Market 流動性的最大值，確保畫面顯示的是幾十萬美金的那個大數字
+                final_vol = max(event_volume, m_vol, m_liq)
                 result[t1] = {"prob": round(p1*100,1), "volume": round(final_vol), "reliable": final_vol>=5000}
                 result[t2] = {"prob": round(p2*100,1), "volume": round(final_vol), "reliable": final_vol>=5000}
 
@@ -548,7 +551,7 @@ async def update_results():
         return {"status":"error","message":str(e)}
 
 @app.get("/")
-async def root(): return {"status":"ok","message":"NBA 預測系統後端運作中","version":"v3.1-polymarket-ultimate"}
+async def root(): return {"status":"ok","message":"NBA 預測系統後端運作中","version":"v3.1-polymarket-anti-bug"}
 
 @app.get("/api/b2b")
 async def get_b2b(): return await fetch_b2b_status()
