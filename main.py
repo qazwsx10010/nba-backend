@@ -76,7 +76,7 @@ TW_TEAM_MAP = {
     "奧克拉荷馬雷霆":"Oklahoma City Thunder","奧蘭多魔術":"Orlando Magic",
     "費城76人":"Philadelphia 76ers","鳳凰城太陽":"Phoenix Suns",
     "波特蘭拓荒者":"Portland Trail Blazers","沙加緬度國王":"Sacramento Kings",
-    "聖安東尼奧馬刺":"San Antonio Spurs","多倫多暴龍":"Toronto Raptors",
+    "聖安東尼馬刺":"San Antonio Spurs","多倫多暴龍":"Toronto Raptors",
     "猶他爵士":"Utah Jazz","華盛頓巫師":"Washington Wizards",
 }
 
@@ -313,8 +313,19 @@ async def fetch_polymarket_odds():
             "Bucks","Timberwolves","Pelicans","Knicks","Thunder","Magic","76ers","Suns",
             "Trail Blazers","Kings","Spurs","Raptors","Jazz","Wizards"
         }
+        
+        # 建立縮寫翻譯字典，解決 Polymarket 只回傳 PHI/BOS 的問題
+        abbr_to_short = {
+            "ATL": "Hawks", "BOS": "Celtics", "BKN": "Nets", "CHA": "Hornets",
+            "CHI": "Bulls", "CLE": "Cavaliers", "DAL": "Mavericks", "DEN": "Nuggets",
+            "DET": "Pistons", "GSW": "Warriors", "HOU": "Rockets", "IND": "Pacers",
+            "LAC": "Clippers", "LAL": "Lakers", "MEM": "Grizzlies", "MIA": "Heat",
+            "MIL": "Bucks", "MIN": "Timberwolves", "NOP": "Pelicans", "NYK": "Knicks",
+            "OKC": "Thunder", "ORL": "Magic", "PHI": "76ers", "PHX": "Suns",
+            "POR": "Trail Blazers", "SAC": "Kings", "SAS": "Spurs", "TOR": "Raptors",
+            "UTA": "Jazz", "WAS": "Wizards"
+        }
 
-        # 排除非 NBA 的賽事關鍵字
         non_nba_keywords = ["Oilers","Flames","Leafs","Canucks","Jets","Senators",
                            "IPL","Premier League","Champions League","Arsenal","Chelsea", "WNBA", "NCAA"]
 
@@ -323,6 +334,10 @@ async def fetch_polymarket_odds():
             event_volume = float(event.get("volume", 0) or event.get("volume24hr", 0) or 0)
 
             if any(kw in event_title for kw in non_nba_keywords):
+                continue
+
+            found_teams = [t for t in nba_teams if t in event_title]
+            if len(found_teams) < 2:
                 continue
 
             best_market = None
@@ -353,13 +368,10 @@ async def fetch_polymarket_odds():
 
                 t1_raw, t2_raw = str(outcomes[0]).strip(), str(outcomes[1]).strip()
                 
-                # 【最核心的修正：模糊匹配！】
-                # 因為 Polymarket 回傳的選項常常是全名 "Philadelphia 76ers"
-                # 所以我們檢查 "76ers" 是否「包含在」選項名稱中，而不是要求 100% 相等
-                t1 = next((t for t in nba_teams if t in t1_raw), None)
-                t2 = next((t for t in nba_teams if t in t2_raw), None)
+                # 【完美解析】：不管 Polymarket 給的是 PHI、BOS，還是完整的 Philadelphia 76ers，通通都能轉換成正確的隊名
+                t1 = abbr_to_short.get(t1_raw.upper()) or next((t for t in nba_teams if t in t1_raw), None)
+                t2 = abbr_to_short.get(t2_raw.upper()) or next((t for t in nba_teams if t in t2_raw), None)
 
-                # 如果兩個選項都能找到對應的 NBA 球隊短名，這就是我們要的盤口
                 if not t1 or not t2:
                     continue
 
@@ -370,7 +382,7 @@ async def fetch_polymarket_odds():
 
                 market_volume = float(m.get("volume", 0) or m.get("volume24hr", 0) or m.get("liquidity", 0) or 0)
                 
-                # 找出交易量最大的那個盤口
+                # 強制選取最高交易量的盤口
                 if market_volume > max_vol:
                     max_vol = market_volume
                     best_market = (t1, t2, p1, p2, market_volume)
@@ -536,7 +548,7 @@ async def update_results():
         return {"status":"error","message":str(e)}
 
 @app.get("/")
-async def root(): return {"status":"ok","message":"NBA 預測系統後端運作中","version":"v3.1-polymarket-final"}
+async def root(): return {"status":"ok","message":"NBA 預測系統後端運作中","version":"v3.1-polymarket-ultimate"}
 
 @app.get("/api/b2b")
 async def get_b2b(): return await fetch_b2b_status()
