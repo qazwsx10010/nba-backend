@@ -344,17 +344,9 @@ async def fetch_polymarket_odds():
             if event_title and any(kw in title_lower for kw in NON_GAME_KEYWORDS):
                 continue
 
-            # ✅ 修正3："vs" 格式確認
-            # 先查 event title；若 title 欄位是空的（API 欄位名不同），
-            # 退而去查底下任一 market question，避免全部事件被誤殺
-            has_vs = "vs" in title_lower
-            if not has_vs:
-                has_vs = any(
-                    "vs" in (m.get("question") or "").lower()
-                    for m in event.get("markets", [])
-                )
-            if not has_vs:
-                continue
+            # ⚠️  不做 "vs" 標題檢查——NBA event title 格式是
+            # "Will the Cavaliers beat the Raptors?"，根本不含 "vs"。
+            # 單場比賽的判斷靠下面 outcomes 解析出剛好 2 支球隊來保證。
 
             # ✅ 修正4：volumeNum 才是 Polymarket 網頁顯示的累積總量
             # volume / volume24hr 都太小或是字串 "0.0"（Python 視為 truthy 但值為 0）
