@@ -288,6 +288,7 @@ async def fetch_nba_stats():
 
 async def fetch_polymarket_odds():
     try:
+        import json as _json
         async with httpx.AsyncClient(timeout=20) as client:
             res = await client.get(
                 "https://gamma-api.polymarket.com/events",
