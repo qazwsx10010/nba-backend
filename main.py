@@ -288,18 +288,13 @@ async def fetch_nba_stats():
 
 async def fetch_polymarket_odds():
     try:
-        import json as _json
-
-        # ✅ 修正1：改用 volumeNum 排序，取到累積總量最大的賽事
         async with httpx.AsyncClient(timeout=20) as client:
             res = await client.get(
                 "https://gamma-api.polymarket.com/events",
                 params={
-                    "active": "true",
-                    "closed": "false",
-                    "limit": "300",
+                    "active": "true", "closed": "false", "limit": "100",
                     "tag_slug": "basketball",
-                    "order": "volumeNum",
+                    "order": "volume24hr",   # MLB 也是用這個，是有效的 sort key
                     "ascending": "false",
                 },
                 headers={"User-Agent": "Mozilla/5.0"}
@@ -307,16 +302,13 @@ async def fetch_polymarket_odds():
             data = res.json()
 
         events = data if isinstance(data, list) else data.get("events", [])
-
-        global_markets = {}
         result = {}
 
-        # ✅ 修正2：futures 黑名單 — event title 含這些字就整個 event 跳過
-        # 這防止 "NBA Finals: Celtics vs Heat" 這類 futures 事件
-        # 用小 volume 蓋掉真實單場賽事的大 volume
-        NON_GAME_KEYWORDS = [
-            "champion", "finals", "playoff", "win total", "series",
-            "mvp", "draft", "title", "cup", "award", "season win",
+        # futures 黑名單（完全對照 MLB 格式）
+        non_game = [
+            "Champion", "Finals", "Season Win", "Win Total", "Playoff",
+            "Division", "Wild Card", "MVP", "Draft", "Trade", "Cup",
+            "MLB", "NFL", "NHL", "IPL", "Premier League", "Champions",
         ]
 
         def resolve_team(name):
@@ -329,104 +321,86 @@ async def fetch_polymarket_odds():
                 "OKC":"Thunder","ORL":"Magic","PHI":"76ers","PHX":"Suns","POR":"Trail Blazers",
                 "SAC":"Kings","SAS":"Spurs","TOR":"Raptors","UTA":"Jazz","WAS":"Wizards",
                 "SA":"Spurs","NY":"Knicks","NO":"Pelicans","LA":"Lakers","GS":"Warriors",
-                "PHOENIX":"Suns","OKLAHOMA":"Thunder","PHILLY":"76ers","SIXERS":"76ers"
+                "PHOENIX":"Suns","OKLAHOMA":"Thunder","PHILLY":"76ers","SIXERS":"76ers",
             }
             if n in abbr: return abbr[n]
-            for f in ["Hawks", "Celtics", "Nets", "Hornets", "Bulls", "Cavaliers", "Mavericks", "Nuggets", "Pistons", "Warriors", "Rockets", "Pacers", "Clippers", "Lakers", "Grizzlies", "Heat", "Bucks", "Timberwolves", "Pelicans", "Knicks", "Thunder", "Magic", "76ers", "Suns", "Trail Blazers", "Kings", "Spurs", "Raptors", "Jazz", "Wizards"]:
+            for f in ["Hawks","Celtics","Nets","Hornets","Bulls","Cavaliers","Mavericks",
+                      "Nuggets","Pistons","Warriors","Rockets","Pacers","Clippers","Lakers",
+                      "Grizzlies","Heat","Bucks","Timberwolves","Pelicans","Knicks","Thunder",
+                      "Magic","76ers","Suns","Trail Blazers","Kings","Spurs","Raptors","Jazz","Wizards"]:
                 if f.upper() in n: return f
             return None
 
         for event in events:
-            event_title = (event.get("title") or event.get("name") or "").strip()
-            title_lower = event_title.lower()
+            title = event.get("title", "")
 
-            # ✅ 修正2（執行）：黑名單過濾（有 title 才比對，沒有就放行）
-            if event_title and any(kw in title_lower for kw in NON_GAME_KEYWORDS):
-                continue
+            # futures 黑名單（有 title 才比對）
+            if any(kw in title for kw in non_game): continue
 
-            # ⚠️  不做 "vs" 標題檢查——NBA event title 格式是
-            # "Will the Cavaliers beat the Raptors?"，根本不含 "vs"。
-            # 單場比賽的判斷靠下面 outcomes 解析出剛好 2 支球隊來保證。
-
-            # ✅ 修正4：volumeNum 才是 Polymarket 網頁顯示的累積總量
-            # volume / volume24hr 都太小或是字串 "0.0"（Python 視為 truthy 但值為 0）
-            event_vol = float(
-                event.get("volumeNum") or
-                event.get("volume") or
-                event.get("volume24hr") or 0
-            )
+            # event 層級總成交量：對照 MLB，用 max() 三欄位取最大
+            # 不用 "or" 是因為 "0.0"（字串）是 truthy，會讓 or 短路在 0
+            try:
+                event_vol = max(
+                    float(event.get("volumeNum") or 0),
+                    float(event.get("volume24hr") or 0),
+                    float(event.get("volume") or 0),
+                )
+            except:
+                event_vol = 0
 
             for m in event.get("markets", []):
-                q = m.get("question", "").upper()
+                ql = (m.get("question") or "").lower()
 
-                # 排除大小分、單節勝負等非勝負盤
-                if any(x in q for x in ["SPREAD", "TOTAL", "OVER", "UNDER", "MARGIN", "RACE",
-                                         "HALF", "QUARTER", "FIRST", "LEAD", "POINTS",
-                                         "REBOUNDS", "ASSISTS"]):
-                    continue
+                # 排除非勝負盤
+                if any(x in ql for x in ["spread", "total", "over", "under", "margin", "race",
+                                          "half", "quarter", "first", "lead", "points",
+                                          "rebounds", "assists", "will there"]): continue
 
                 outcomes_raw = m.get("outcomes", "[]")
-                prices_raw = m.get("outcomePrices", "[]")
-
+                prices_raw   = m.get("outcomePrices", "[]")
                 try: outcomes = _json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else outcomes_raw
                 except: continue
-                try: prices = _json.loads(prices_raw) if isinstance(prices_raw, str) else prices_raw
+                try: prices   = _json.loads(prices_raw)   if isinstance(prices_raw, str)   else prices_raw
                 except: continue
+                if len(outcomes) != 2 or len(prices) != 2: continue
 
-                if len(outcomes) != 2 or len(prices) != 2:
-                    continue
-
-                t1_raw, t2_raw = str(outcomes[0]).upper(), str(outcomes[1]).upper()
+                t1_raw = str(outcomes[0]).strip()
+                t2_raw = str(outcomes[1]).strip()
 
                 # 排除讓分盤（含 +/- 符號）
-                if any(c in t1_raw for c in ["+", "-", "."]) or any(c in t2_raw for c in ["+", "-", "."]):
-                    continue
+                if any(c in t1_raw for c in ["+", "-"]) or any(c in t2_raw for c in ["+", "-"]): continue
 
                 t1 = resolve_team(t1_raw)
                 t2 = resolve_team(t2_raw)
-
-                if not t1 or not t2 or t1 == t2:
-                    continue
+                if not t1 or not t2 or t1 == t2: continue
 
                 try: p1, p2 = float(prices[0]), float(prices[1])
                 except: continue
                 if not (0 < p1 < 1 and 0 < p2 < 1): continue
 
-                # ✅ 修正4（market 層）：同樣優先取 volumeNum
-                m_vol = float(
-                    m.get("volumeNum") or
-                    m.get("volume") or 0
-                )
-                m_liq = float(m.get("liquidity", 0) or 0)
+                # market 層級：同樣用 max() 三欄位（對照 MLB）
+                try:
+                    mk_vol = max(
+                        float(m.get("volumeNum") or 0),
+                        float(m.get("volume24hr") or 0),
+                        float(m.get("volume") or 0),
+                    )
+                except:
+                    mk_vol = 0
 
-                # 權重分數：三個來源加總，誰大誰代表這場比賽
-                score = m_vol + m_liq + event_vol
+                vol = max(event_vol, mk_vol)
 
-                teams = sorted([t1, t2])
-                matchup_key = f"{teams[0]}_vs_{teams[1]}"
+                # 只在 volume 更大時寫入，防止 futures 小量蓋掉單場大量（對照 MLB）
+                if t1 not in result or vol > result[t1].get("volume", 0):
+                    result[t1] = {"prob": round(p1*100, 1), "volume": round(vol), "reliable": vol >= 5000}
+                if t2 not in result or vol > result[t2].get("volume", 0):
+                    result[t2] = {"prob": round(p2*100, 1), "volume": round(vol), "reliable": vol >= 5000}
+                break  # 找到第一個有效 moneyline market 就跳出（對照 MLB）
 
-                # ✅ 防覆蓋：同一場比賽只保留 score 最大的盤口
-                if matchup_key not in global_markets or score > global_markets[matchup_key]["score"]:
-                    display_vol = max(event_vol, m_vol, m_liq)
-                    global_markets[matchup_key] = {
-                        "score": score,
-                        "t1": t1, "p1": p1,
-                        "t2": t2, "p2": p2,
-                        "display_vol": display_vol,
-                    }
-
-        for data in global_markets.values():
-            vol = data["display_vol"]
-            result[data["t1"]] = {"prob": round(data["p1"]*100, 1), "volume": round(vol), "reliable": vol >= 5000}
-            result[data["t2"]] = {"prob": round(data["p2"]*100, 1), "volume": round(vol), "reliable": vol >= 5000}
-
-        return {
-            "status": "ok",
-            "odds": result,
-            "markets": len(global_markets),
-        }
+        return {"status": "ok", "odds": result, "markets": len(result) // 2}
     except Exception as e:
         return {"status": "error", "message": str(e), "odds": {}}
+
 
 async def fetch_tw_odds(target_date=None):
     if not target_date: target_date=date.today().strftime("%Y-%m-%d")
