@@ -338,14 +338,22 @@ async def fetch_polymarket_odds():
 
         for event in events:
             event_title = (event.get("title") or event.get("name") or "").strip()
+            title_lower = event_title.lower()
 
-            # ✅ 修正3：只接受 "vs" 格式的單場比賽事件，跳過其他 futures/系列賽
-            if "vs" not in event_title.lower():
+            # ✅ 修正2（執行）：黑名單過濾（有 title 才比對，沒有就放行）
+            if event_title and any(kw in title_lower for kw in NON_GAME_KEYWORDS):
                 continue
 
-            # ✅ 修正2（執行）：黑名單過濾
-            title_lower = event_title.lower()
-            if any(kw in title_lower for kw in NON_GAME_KEYWORDS):
+            # ✅ 修正3："vs" 格式確認
+            # 先查 event title；若 title 欄位是空的（API 欄位名不同），
+            # 退而去查底下任一 market question，避免全部事件被誤殺
+            has_vs = "vs" in title_lower
+            if not has_vs:
+                has_vs = any(
+                    "vs" in (m.get("question") or "").lower()
+                    for m in event.get("markets", [])
+                )
+            if not has_vs:
                 continue
 
             # ✅ 修正4：volumeNum 才是 Polymarket 網頁顯示的累積總量
