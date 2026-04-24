@@ -446,26 +446,54 @@ async def fetch_and_predict():
 
         async with httpx.AsyncClient(timeout=30) as client:
             res=await client.get("https://api.the-odds-api.com/v4/sports/basketball_nba/odds/",
-                params={"apiKey":ODDS_KEY,"regions":"us","markets":"h2h,spreads","oddsFormat":"decimal","dateFormat":"iso"})
+                params={"apiKey":ODDS_KEY,"regions":"us,eu","markets":"h2h,spreads","oddsFormat":"decimal","dateFormat":"iso"})
             data=res.json()
         conn=await get_db()
         today=date.today(); saved=0
+
+        # Sharp bookmaker 優先順序
+        SHARP_BOOKS=["betfair_ex_eu","pinnacle"]
+
         for game in data:
             hEn=normalize_team(game["home_team"])
             aEn=normalize_team(game["away_team"])
             h2hH=h2hA=spLine=spHO=spAO=None
-            for bk in game.get("bookmakers",[]):
+            sharp_h2hH=sharp_h2hA=None
+            sharp_book=None
+
+            # 第一輪：找 Sharp 賠率（Betfair / Pinnacle）
+            for preferred in SHARP_BOOKS:
+                bk=next((b for b in game.get("bookmakers",[]) if b.get("key")==preferred),None)
+                if not bk: continue
                 for mk in bk.get("markets",[]):
                     if mk["key"]=="h2h":
-                        ho=next((o for o in mk["outcomes"] if o["name"]==hEn),None)
-                        ao=next((o for o in mk["outcomes"] if o["name"]==aEn),None)
-                        if ho and ao: h2hH=ho["price"]; h2hA=ao["price"]
+                        ho=next((o for o in mk["outcomes"] if normalize_team(o["name"])==hEn),None)
+                        ao=next((o for o in mk["outcomes"] if normalize_team(o["name"])==aEn),None)
+                        if ho and ao: sharp_h2hH=ho["price"]; sharp_h2hA=ao["price"]; sharp_book=preferred
                     if mk["key"]=="spreads":
-                        ho=next((o for o in mk["outcomes"] if o["name"]==hEn),None)
-                        ao=next((o for o in mk["outcomes"] if o["name"]==aEn),None)
+                        ho=next((o for o in mk["outcomes"] if normalize_team(o["name"])==hEn),None)
+                        ao=next((o for o in mk["outcomes"] if normalize_team(o["name"])==aEn),None)
+                        if ho and ao and spLine is None: spLine=ho["point"]; spHO=ho["price"]; spAO=ao["price"]
+                if sharp_h2hH: break
+
+            # 第二輪：fallback 到任意 bookmaker
+            for bk in game.get("bookmakers",[]):
+                for mk in bk.get("markets",[]):
+                    if mk["key"]=="h2h" and not h2hH:
+                        ho=next((o for o in mk["outcomes"] if normalize_team(o["name"])==hEn),None)
+                        ao=next((o for o in mk["outcomes"] if normalize_team(o["name"])==aEn),None)
+                        if ho and ao: h2hH=ho["price"]; h2hA=ao["price"]
+                    if mk["key"]=="spreads" and spLine is None:
+                        ho=next((o for o in mk["outcomes"] if normalize_team(o["name"])==hEn),None)
+                        ao=next((o for o in mk["outcomes"] if normalize_team(o["name"])==aEn),None)
                         if ho and ao: spLine=ho["point"]; spHO=ho["price"]; spAO=ao["price"]
-                break
+                if h2hH and spLine is not None: break
+
+            # 優先用 Sharp 賠率，沒有才用一般
+            if sharp_h2hH: h2hH=sharp_h2hH; h2hA=sharp_h2hA
             if not h2hH: continue
+
+            # ── 用 Sharp 去 juice 概率作為 true prob
             bp=(1/h2hH)/((1/h2hH)+(1/h2hA))
             home_inj=injuries.get(hEn,[])
             away_inj=injuries.get(aEn,[])
@@ -474,20 +502,33 @@ async def fetch_and_predict():
             mp=calc_model(hEn,aEn,bp,home_inj,away_inj,home_b2b,away_b2b)
             ms=(mp-0.5)*28
             conf=max(round(mp*100),round((1-mp)*100))
+
+            # ── 計算不讓分 EV（moneyline）
+            ml_prob=mp if mp>=0.5 else 1-mp
+            ml_team=hEn if mp>=0.5 else aEn
+            ml_odds=h2hH if mp>=0.5 else h2hA
+            ml_ev=(ml_prob*ml_odds-1)*100
+
+            # ── 計算讓分 EV（spread）
+            sp_ev=-999; sp_team=None; sp_odds=None; sp_btype=""
             if spLine is not None:
                 diff=ms-spLine
-                if abs(diff)<0.5:
-                    bet=hEn if mp>=0.5 else aEn; odds=h2hH if mp>=0.5 else h2hA; btype="不讓分"
-                elif diff>0:
-                    bet=hEn; odds=spHO or 1.72
-                    btype=f"讓分 {spLine}" if spLine<0 else f"吃分 +{spLine}"
-                else:
-                    bet=aEn; odds=spAO or 1.72
-                    away_spread=-spLine
-                    btype=f"讓分 {away_spread}" if away_spread<0 else f"吃分 +{away_spread}"
+                sp_prob=min(0.5+abs(diff)*0.025,0.88)
+                if abs(diff)>=0.5:
+                    if diff>0:
+                        sp_team=hEn; sp_odds=spHO or 1.72
+                        sp_btype=f"讓分 {spLine}" if spLine<0 else f"吃分 +{spLine}"
+                    else:
+                        sp_team=aEn; sp_odds=spAO or 1.72
+                        away_spread=-spLine
+                        sp_btype=f"讓分 {away_spread}" if away_spread<0 else f"吃分 +{away_spread}"
+                    sp_ev=(sp_prob*sp_odds-1)*100
+
+            # ── 選擇 EV 最高的下注方式
+            if sp_ev > ml_ev and sp_ev > -999:
+                bet=sp_team; odds=sp_odds; btype=sp_btype; ev=sp_ev
             else:
-                bet=hEn if mp>=0.5 else aEn; odds=h2hH if mp>=0.5 else h2hA; btype="不讓分"
-            ev=(conf/100*odds-1)*100
+                bet=ml_team; odds=ml_odds; btype="不讓分"; ev=ml_ev
             exists=await conn.fetchrow("SELECT id,result FROM predictions WHERE game_date=$1 AND home_team=$2 AND away_team=$3",today,hEn,aEn)
             if not exists:
                 await conn.execute("""
