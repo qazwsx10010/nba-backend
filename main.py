@@ -450,18 +450,13 @@ async def fetch_and_predict():
             data=res.json()
         conn=await get_db()
         today=date.today(); saved=0
-
-        # Sharp bookmaker 優先順序
         SHARP_BOOKS=["betfair_ex_eu","pinnacle"]
-
         for game in data:
             hEn=normalize_team(game["home_team"])
             aEn=normalize_team(game["away_team"])
             h2hH=h2hA=spLine=spHO=spAO=None
             sharp_h2hH=sharp_h2hA=None
-            sharp_book=None
-
-            # 第一輪：找 Sharp 賠率（Betfair / Pinnacle）
+            # 第一輪：找 Sharp（Betfair / Pinnacle）
             for preferred in SHARP_BOOKS:
                 bk=next((b for b in game.get("bookmakers",[]) if b.get("key")==preferred),None)
                 if not bk: continue
@@ -469,14 +464,13 @@ async def fetch_and_predict():
                     if mk["key"]=="h2h":
                         ho=next((o for o in mk["outcomes"] if normalize_team(o["name"])==hEn),None)
                         ao=next((o for o in mk["outcomes"] if normalize_team(o["name"])==aEn),None)
-                        if ho and ao: sharp_h2hH=ho["price"]; sharp_h2hA=ao["price"]; sharp_book=preferred
-                    if mk["key"]=="spreads":
+                        if ho and ao: sharp_h2hH=ho["price"]; sharp_h2hA=ao["price"]
+                    if mk["key"]=="spreads" and spLine is None:
                         ho=next((o for o in mk["outcomes"] if normalize_team(o["name"])==hEn),None)
                         ao=next((o for o in mk["outcomes"] if normalize_team(o["name"])==aEn),None)
-                        if ho and ao and spLine is None: spLine=ho["point"]; spHO=ho["price"]; spAO=ao["price"]
+                        if ho and ao: spLine=ho["point"]; spHO=ho["price"]; spAO=ao["price"]
                 if sharp_h2hH: break
-
-            # 第二輪：fallback 到任意 bookmaker
+            # 第二輪：fallback
             for bk in game.get("bookmakers",[]):
                 for mk in bk.get("markets",[]):
                     if mk["key"]=="h2h" and not h2hH:
@@ -488,12 +482,8 @@ async def fetch_and_predict():
                         ao=next((o for o in mk["outcomes"] if normalize_team(o["name"])==aEn),None)
                         if ho and ao: spLine=ho["point"]; spHO=ho["price"]; spAO=ao["price"]
                 if h2hH and spLine is not None: break
-
-            # 優先用 Sharp 賠率，沒有才用一般
             if sharp_h2hH: h2hH=sharp_h2hH; h2hA=sharp_h2hA
             if not h2hH: continue
-
-            # ── 用 Sharp 去 juice 概率作為 true prob
             bp=(1/h2hH)/((1/h2hH)+(1/h2hA))
             home_inj=injuries.get(hEn,[])
             away_inj=injuries.get(aEn,[])
@@ -502,14 +492,12 @@ async def fetch_and_predict():
             mp=calc_model(hEn,aEn,bp,home_inj,away_inj,home_b2b,away_b2b)
             ms=(mp-0.5)*28
             conf=max(round(mp*100),round((1-mp)*100))
-
-            # ── 計算不讓分 EV（moneyline）
+            # 不讓分 EV
             ml_prob=mp if mp>=0.5 else 1-mp
             ml_team=hEn if mp>=0.5 else aEn
             ml_odds=h2hH if mp>=0.5 else h2hA
             ml_ev=(ml_prob*ml_odds-1)*100
-
-            # ── 計算讓分 EV（spread）
+            # 讓分 EV
             sp_ev=-999; sp_team=None; sp_odds=None; sp_btype=""
             if spLine is not None:
                 diff=ms-spLine
@@ -523,8 +511,7 @@ async def fetch_and_predict():
                         away_spread=-spLine
                         sp_btype=f"讓分 {away_spread}" if away_spread<0 else f"吃分 +{away_spread}"
                     sp_ev=(sp_prob*sp_odds-1)*100
-
-            # ── 選擇 EV 最高的下注方式
+            # 選 EV 最高的
             if sp_ev > ml_ev and sp_ev > -999:
                 bet=sp_team; odds=sp_odds; btype=sp_btype; ev=sp_ev
             else:
@@ -551,38 +538,59 @@ async def fetch_and_predict():
 async def update_results():
     if not DB_URL: return
     try:
+        conn=await get_db(); updated=0
+        # 查最近 5 天所有 result IS NULL 的 predictions
+        pending=await conn.fetch(
+            "SELECT id,game_date,home_team,away_team,predicted_winner,bet_type,spread_line FROM predictions WHERE result IS NULL AND game_date>=CURRENT_DATE-interval '5 days'"
+        )
+        if not pending:
+            await conn.close()
+            return {"status":"ok","updated":0,"message":"無待回填紀錄"}
+        # 收集需要查的日期（轉成 ESPN 格式 YYYYMMDD）
+        dates_needed=set()
+        for row in pending:
+            gd=row["game_date"]
+            # 查比賽日期本身 和 前一天（因為時區差異，ESPN 可能記在前一天）
+            dates_needed.add(gd.strftime("%Y%m%d"))
+            dates_needed.add((gd-timedelta(days=1)).strftime("%Y%m%d"))
+        # 從 ESPN 抓每個日期的比分
+        all_finished=[]
         async with httpx.AsyncClient(timeout=15) as client:
-            res=await client.get("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard")
-            data=res.json()
-        conn=await get_db(); yesterday=date.today()-timedelta(days=1); updated=0
-        for ev in data.get("events",[]):
-            comp=ev["competitions"][0]
-            if ev["status"]["type"]["state"]!="post": continue
-            home=next((c for c in comp["competitors"] if c["homeAway"]=="home"),None)
-            away=next((c for c in comp["competitors"] if c["homeAway"]=="away"),None)
-            if not home or not away: continue
-            hName=home["team"]["displayName"]; aName=away["team"]["displayName"]
-            hScore=int(home.get("score",0)); aScore=int(away.get("score",0))
-            winner=hName if hScore>aScore else aName
-            row=await conn.fetchrow(
-                "SELECT id,predicted_winner,bet_type,spread_line FROM predictions WHERE game_date=$1 AND home_team=$2 AND away_team=$3",
-                yesterday,hName,aName)
-            if row:
-                bet_type=row["bet_type"] or ""
-                spread_line=row["spread_line"]
-                predicted=row["predicted_winner"]
-
-                if "讓分" in bet_type and spread_line is not None:
-                    result = (hScore + spread_line) > aScore
-                elif "吃分" in bet_type and spread_line is not None:
-                    result = (aScore - spread_line) > hScore
-                else:
-                    result = predicted == winner
-
-                await conn.execute(
-                    "UPDATE predictions SET actual_winner=$1,actual_home_score=$2,actual_away_score=$3,result=$4 WHERE id=$5",
-                    winner,hScore,aScore,result,row["id"])
-                updated+=1
+            for dt in sorted(dates_needed):
+                try:
+                    res=await client.get(f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={dt}")
+                    data=res.json()
+                    for ev in data.get("events",[]):
+                        comp=ev["competitions"][0]
+                        if ev["status"]["type"]["state"]!="post": continue
+                        home=next((c for c in comp["competitors"] if c["homeAway"]=="home"),None)
+                        away=next((c for c in comp["competitors"] if c["homeAway"]=="away"),None)
+                        if not home or not away: continue
+                        all_finished.append({
+                            "home":home["team"]["displayName"],
+                            "away":away["team"]["displayName"],
+                            "hScore":int(home.get("score",0)),
+                            "aScore":int(away.get("score",0)),
+                        })
+                except: pass
+        # 配對：用隊伍名稱匹配（不依賴日期完全吻合）
+        for row in pending:
+            match=next((f for f in all_finished if f["home"]==row["home_team"] and f["away"]==row["away_team"]),None)
+            if not match: continue
+            hScore=match["hScore"]; aScore=match["aScore"]
+            winner=match["home"] if hScore>aScore else match["away"]
+            bet_type=row["bet_type"] or ""
+            spread_line=row["spread_line"]
+            if "讓分" in bet_type and spread_line is not None:
+                result = (hScore + spread_line) > aScore
+            elif "吃分" in bet_type and spread_line is not None:
+                result = (aScore - spread_line) > hScore
+            else:
+                result = row["predicted_winner"] == winner
+            await conn.execute(
+                "UPDATE predictions SET actual_winner=$1,actual_home_score=$2,actual_away_score=$3,result=$4 WHERE id=$5",
+                winner,hScore,aScore,result,row["id"])
+            updated+=1
         await conn.close()
         return {"status":"ok","updated":updated}
     except Exception as e:
@@ -662,6 +670,11 @@ async def trigger_predict(): return await fetch_and_predict() or {"status":"ok"}
 @app.post("/api/trigger/results")
 async def trigger_results(): return await update_results() or {"status":"ok"}
 
+@app.post("/api/trigger/backfill")
+async def trigger_backfill():
+    """手動觸發：回填最近 5 天所有漏掉的比賽結果"""
+    return await update_results() or {"status":"ok"}
+
 @app.post("/api/trigger/nba-stats")
 async def trigger_nba_stats(): return await fetch_nba_stats()
 
@@ -673,6 +686,8 @@ async def startup():
     scheduler.add_job(fetch_and_predict,"cron",hour=8,minute=0)
     scheduler.add_job(fetch_and_predict,"cron",hour=15,minute=0)
     scheduler.add_job(update_results,"cron",hour=2,minute=0)
+    scheduler.add_job(update_results,"cron",hour=12,minute=0)
+    scheduler.add_job(update_results,"cron",hour=18,minute=0)
     scheduler.add_job(fetch_nba_stats,"cron",minute=0)
     scheduler.add_job(fetch_espn_injuries,"cron",minute=15)
     scheduler.add_job(fetch_b2b_status,"cron",minute=30)
